@@ -4,7 +4,7 @@ $lang_log = array
 (
 	'std_sorry' => "对不起...",
 	'std_permission_denied_only' => "你没有该权限。只有",
-	'std_or_above_can_view' => "及以上等级的用户才能查看日志。<br /><br />请查看<a class=faqlink href=faq.php#id22><b>常见问题</b></a>了解更多关于用户等级和权限的信息。<br /><br /><b></p>" .$SITENAME."管理组</b>",
+	'std_or_above_can_view' => "及以上等级的用户才能查看日志。<br /><br />请查看<a class=faqlink href=faq.php#id22><b>常见问题</b></a>了解更多关于用户等级和权限的信息。<br /><br /><b></p>%s管理组</b>",
 	'head_site_log' => "常规日志",
 	'text_search_log' => "搜素常规日志",
 	'submit_search' => "给我搜",
@@ -12,6 +12,7 @@ $lang_log = array
 	'title_time_added' => "时间",
 	'col_date' => "日期",
 	'col_event' => "事件",
+    'col_user' => '用户',
 	'time_zone_note' => "<p>时间为北京时间。</p>\n",
 	'text_daily_log' => "&nbsp;常&nbsp;规&nbsp;日&nbsp;志&nbsp;",
 	'text_chronicle' => "&nbsp;史&nbsp;&nbsp;册&nbsp;",

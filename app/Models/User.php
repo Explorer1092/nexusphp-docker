@@ -2,8 +2,11 @@
 
 namespace App\Models;
 
+use App\Exceptions\NexusException;
 use App\Http\Middleware\Locale;
+use App\Models\Traits\NexusActivityLogTrait;
 use App\Repositories\ExamRepository;
+use App\Repositories\TokenRepository;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Casts\Attribute;
@@ -22,13 +25,11 @@ use NexusPlugin\Permission\Models\UserPermission;
 
 class User extends Authenticatable implements FilamentUser, HasName
 {
-    use HasFactory, Notifiable, HasApiTokens;
+    use HasFactory, Notifiable, HasApiTokens, NexusActivityLogTrait;
 
     public $timestamps = false;
 
     protected $perPage = 50;
-
-    protected $connection = NexusDB::ELOQUENT_CONNECTION_NAME;
 
     const STATUS_CONFIRMED = 'confirmed';
     const STATUS_PENDING = 'pending';
@@ -65,7 +66,7 @@ class User extends Authenticatable implements FilamentUser, HasName
         self::CLASS_EXTREME_USER => ['text' => 'Extreme User', 'min_seed_points' => 600000],
         self::CLASS_ULTIMATE_USER => ['text' => 'Ultimate User', 'min_seed_points' => 800000],
         self::CLASS_NEXUS_MASTER => ['text' => 'Nexus Master', 'min_seed_points' => 1000000],
-        self::CLASS_VIP => ['text' => 'Vip'],
+        self::CLASS_VIP => ['text' => 'VIP'],
         self::CLASS_RETIREE => ['text' => 'Retiree'],
         self::CLASS_UPLOADER => ['text' => 'Uploader'],
         self::CLASS_MODERATOR => ['text' => 'Moderator'],
@@ -104,6 +105,18 @@ class User extends Authenticatable implements FilamentUser, HasName
 
     public static array $notificationOptions = ['topic_reply', 'hr_reached'];
 
+    private const USER_ENABLE_LATELY = "user_enable_lately:%s";
+
+    public function getConnectionName()
+    {
+        return NexusDB::getConnectionName();
+    }
+
+    public static function getUserEnableLatelyCacheKey(int $userId): string
+    {
+        return sprintf(self::USER_ENABLE_LATELY, $userId);
+    }
+
     public function getClassTextAttribute(): string
     {
         return self::getClassText($this->class);
@@ -114,12 +127,12 @@ class User extends Authenticatable implements FilamentUser, HasName
         if (!is_numeric($class)|| !isset(self::$classes[$class])) {
             return '';
         }
+        $classText = self::$classes[$class]['text'];
         if ($class >= self::CLASS_VIP) {
-            $classText = nexus_trans('user.class_names.' . $class);
+            $alias = nexus_trans('user.class_names.' . $class);
         } else {
-            $classText = self::$classes[$class]['text'];
+            $alias = Setting::get("account.{$class}_alias");
         }
-        $alias = Setting::get("account.{$class}_alias");
         if (!empty($alias)) {
             $classText .= "({$alias})";
         }
@@ -185,7 +198,7 @@ class User extends Authenticatable implements FilamentUser, HasName
         'username', 'email', 'passhash', 'secret', 'stylesheet', 'editsecret', 'added', 'enabled', 'status',
         'leechwarn', 'leechwarnuntil', 'page', 'class', 'uploaded', 'downloaded', 'clientselect', 'showclienterror', 'last_home',
         'seedbonus', 'downloadpos', 'vip_added', 'vip_until', 'title', 'invites', 'attendance_card',
-        'seed_points_per_hour', 'passkey',
+        'seed_points_per_hour', 'passkey', 'auth_key', 'last_login', 'lang', 'provider_id'
     ];
 
     /**
@@ -276,13 +289,16 @@ class User extends Authenticatable implements FilamentUser, HasName
 
     public function checkIsNormal(array $fields = ['status', 'enabled']): bool
     {
+        $params = [
+            'user_id' => $this->id,
+            'username' => $this->username,
+        ];
         if (in_array('status', $fields) && $this->getAttribute('status') != self::STATUS_CONFIRMED) {
-            throw new \InvalidArgumentException(sprintf('User: %s is not confirmed.', $this->id));
+            throw new NexusException(nexus_trans("user.user_is_not_confirmed", $params));
         }
         if (in_array('enabled', $fields) && $this->getAttribute('enabled') != self::ENABLED_YES) {
-            throw new \InvalidArgumentException(sprintf('User: %s is not enabled.', $this->id));
+            throw new NexusException(nexus_trans("user.user_is_disabled", $params));
         }
-
         return true;
     }
 
@@ -295,8 +311,8 @@ class User extends Authenticatable implements FilamentUser, HasName
             $log .= ", locale from cookie: $locale";
         }
         if (!$locale) {
-            $lang = $this->language->site_lang_folder;
-            $locale = Locale::$languageMaps[$lang] ?? 'en';
+            $lang = $this->language?->site_lang_folder ?? null;
+            $locale = Locale::$languageMaps[$lang] ?? $lang;
             $log .= ", [NO_DATA_FROM_COOKIE], lang from database: $lang, locale: $locale";
         }
         do_log($log);
@@ -352,6 +368,13 @@ class User extends Authenticatable implements FilamentUser, HasName
         return $query->where('status', self::STATUS_CONFIRMED)->where('enabled', self::ENABLED_YES);
     }
 
+    public function scopeDonating(Builder $query): Builder
+    {
+        return $query->where('donor', 'yes')->where(function (Builder $query) {
+            return $query->whereNull('donoruntil')
+                ->orWhere('donoruntil', '>=', now());
+        });
+    }
 
     public function exams()
     {
@@ -472,7 +495,7 @@ class User extends Authenticatable implements FilamentUser, HasName
     public function medals(): \Illuminate\Database\Eloquent\Relations\BelongsToMany
     {
         return $this->belongsToMany(Medal::class, 'user_medals', 'uid', 'medal_id')
-            ->withPivot(['id', 'expire_at', 'status', 'priority'])
+            ->withPivot(['id', 'expire_at', 'status', 'priority', 'bonus_addition_expire_at'])
             ->withTimestamps()
             ->orderByPivot('priority', 'desc')
             ;
@@ -538,6 +561,11 @@ class User extends Authenticatable implements FilamentUser, HasName
     public function modifyLogs(): \Illuminate\Database\Eloquent\Relations\HasMany
     {
         return $this->hasMany(UserModifyLog::class, "user_id");
+    }
+
+    public function claims(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(Claim::class, 'uid');
     }
 
     public function getAvatarAttribute($value)
@@ -610,7 +638,33 @@ class User extends Authenticatable implements FilamentUser, HasName
         return is_null($this->original['notifs']) || str_contains($this->notifs, "[{$name}]");
     }
 
-
-
+    public function tokenCan(string $ability): bool
+    {
+        $redis = NexusDB::redis();
+        $cacheKey = Setting::USER_TOKEN_PERMISSION_ALLOWED_CACHE_KRY;
+        if (!$redis->exists($cacheKey)) {
+            $lockKey = "$cacheKey:lock";
+            if ($redis->set($lockKey, 1, ['nx', 'ex' => 5])) {
+                try {
+                    if (!$redis->exists($cacheKey)) {
+                        $abilities = TokenRepository::listUserTokenPermissions(false);
+                        do_log("load user token permissions: " . json_encode($abilities), 'alert');
+                        if (!empty($abilities)) {
+                            $redis->sadd($cacheKey, ...$abilities);
+                        } else {
+                            $redis->sadd($cacheKey, "__NO_USER_TOKEN_PERMISSION__");
+                            $redis->expire($cacheKey, 900);
+                        }
+                    }
+                } catch (\Throwable $throwable) {
+                    do_log($throwable->getMessage(), 'error');
+                } finally {
+                    $redis->del($lockKey);
+                }
+            }
+        }
+        return $redis->sismember($cacheKey, $ability)
+            && $this->accessToken && $this->accessToken->can($ability);
+    }
 
 }

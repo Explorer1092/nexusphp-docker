@@ -2,21 +2,28 @@
 
 namespace App\Providers\Filament;
 
+use App\Models\User;
 use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Http\Middleware\DisableBladeIconComponents;
 use Filament\Http\Middleware\DispatchServingFilamentEvent;
 use Filament\Navigation\NavigationGroup;
+use Filament\Navigation\NavigationItem;
 use Filament\Pages;
 use Filament\Panel;
 use Filament\PanelProvider;
+use Filament\Schemas\Components\Fieldset;
+use Filament\Schemas\Components\Grid;
+use Filament\Schemas\Components\Section;
 use Filament\Support\Colors\Color;
+use Filament\Tables\Columns\Column;
 use Filament\Widgets;
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
 use Illuminate\Cookie\Middleware\EncryptCookies;
 use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Session\Middleware\StartSession;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Route;
 use Illuminate\View\Middleware\ShareErrorsFromSession;
 use Filament\Tables\Enums\FiltersLayout;
@@ -32,9 +39,10 @@ class AppPanelProvider extends PanelProvider
         return $panel
             ->default()
             ->id('admin')
+            ->spa()
             ->homeUrl("/")
             ->sidebarWidth("15rem")
-            ->topbar(true)
+            ->topbar(false)
             ->sidebarCollapsibleOnDesktop(true)
             ->authGuard("nexus-web")
             ->path('nexusphp')
@@ -73,16 +81,40 @@ class AppPanelProvider extends PanelProvider
             ])
             ->authMiddleware([
                 \App\Http\Middleware\Filament::class,
-            ]);
+            ])
+            ->navigationItems([
+                NavigationItem::make('Horizon')
+                ->label(fn () => nexus_trans('admin.sidebar.queue_monitor', [], Auth::user() ? get_langfolder_cookie(true) : 'en'))
+                ->icon('heroicon-o-presentation-chart-line')
+                ->group('System')
+                ->sort(99)
+                ->url('/horizon')
+                ->openUrlInNewTab()
+                ->hidden(fn() => !(Auth::user() && Auth::user()->class >= User::CLASS_SYSOP))
+            ])
+            ;
     }
 
     public function boot()
     {
+        Fieldset::configureUsing(fn (Fieldset $fieldset) => $fieldset
+            ->columnSpanFull()
+        );
+        Grid::configureUsing(fn (Grid $grid) => $grid
+            ->columnSpanFull()
+        );
+        Section::configureUsing(fn (Section $section) => $section
+            ->columnSpanFull()
+        );
         Table::configureUsing(function (Table $table): void {
             $table
                 ->filtersLayout(FiltersLayout::AboveContent)
                 ->paginationPageOptions([10, 25, 50, 100])
             ;
+        });
+        Column::configureUsing(function (Column $section): void {
+            $section
+                ->disabledClick();
         });
     }
 

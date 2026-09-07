@@ -9,14 +9,15 @@ if (isset($_GET['action']) && $_GET['action'] == "apply")
 if (user_can('applylink')){
 stdhead($lang_linksmanage['head_apply_for_links']);
 begin_main_frame();
+$siteName = \App\Models\Setting::getSiteName();
 begin_frame($lang_linksmanage['text_apply_for_links'], true,10,"100%","center");
 	print("<p align=left><b><font size=5>".$lang_linksmanage['text_rules']."</font></b></p>\n");
-	print("<p align=left>&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp ".$lang_linksmanage['text_rule_one']."</p>\n");
-	print("<p align=left>&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp ".$lang_linksmanage['text_rule_two']."</p>\n");
+	print("<p align=left>&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp ".sprintf($lang_linksmanage['text_rule_one'], getSchemeAndHttpHost(), $SLOGAN, $siteName)."</p>\n");
+	print("<p align=left>&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp ".sprintf($lang_linksmanage['text_rule_two'], $siteName)."</p>\n");
 	print("<p align=left>&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp ".$lang_linksmanage['text_rule_three']."</p>\n");
 	print("<p align=left>&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp ".$lang_linksmanage['text_rule_four']."</p>\n");
-	print("<p align=left>&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp ".$lang_linksmanage['text_rule_five']."</p>\n");
-	print("<p align=left>&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp ".$lang_linksmanage['text_rule_six']."</p>\n");
+	print("<p align=left>&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp ".sprintf($lang_linksmanage['text_rule_five'], $siteName)."</p>\n");
+	print("<p align=left>&nbsp&nbsp&nbsp&nbsp&nbsp&nbsp ".sprintf($lang_linksmanage['text_rule_six'], $siteName)."</p>\n");
 
 	print("<p>".$lang_linksmanage['text_red_star_required']."</p>");
 ?>
@@ -64,13 +65,11 @@ elseif (strlen($reason) < 20)
 	stderr($lang_linksmanage['std_error'], $lang_linksmanage['std_reason_too_short']);
 else{
 	$message = "[b]Sitename[/b]: ".$sitename."\n[b]URL[/b]: ".$url."\n[b]Title[/b]: ".$title."\n[b]Administrator: [/b]".$admin."\n[b]EMail[/b]: ".$email."\n[b]Reason[/b]: \n".$reason."\n";
-	$message = sqlesc($message);
 	$subject = $sitename." applys for links";
-	$subject = sqlesc($subject);
 	$added = "'" . date("Y-m-d H:i:s") . "'";
 	$userid = $CURUSER['id'];
-	sql_query("INSERT INTO staffmessages (sender, added, msg, subject) VALUES($userid, $added, $message, $subject)") or sqlerr(__FILE__, __LINE__);
-	stderr($lang_linksmanage['std_success'], $lang_linksmanage['std_success_note']);
+	\App\Models\StaffMessage::add($userid, $subject, $message);
+    stderr($lang_linksmanage['std_success'], $lang_linksmanage['std_success_note']);
 	}
 }
 else permissiondenied();

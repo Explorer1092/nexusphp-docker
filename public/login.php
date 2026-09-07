@@ -59,9 +59,10 @@ if (!$useChallengeResponseAuthentication) {
 <p><?php echo $lang_login['p_need_cookies_enables']?><br /> [<b><?php echo $maxloginattempts;?></b>] <?php echo $lang_login['p_fail_ban']?></p>
 <p><?php echo $lang_login['p_you_have']?> <b><?php echo remaining ();?></b> <?php echo $lang_login['p_remaining_tries']?></p>
 <table border="0" cellpadding="5">
-<tr><td class="rowhead"><?php echo $lang_login['rowhead_username']?></td><td class="rowfollow" align="left"><input type="text" class="username" name="username" style="width: 180px; border: 1px solid gray" /></td></tr>
-<tr><td class="rowhead"><?php echo $lang_login['rowhead_password']?></td><td class="rowfollow" align="left"><input type="password" <?php echo $passwordName ?> style="width: 180px; border: 1px solid gray"/></td></tr>
-<tr><td class="rowhead"><?php echo $lang_login['rowhead_two_step_code']?></td><td class="rowfollow" align="left"><input type="text" name="two_step_code"  placeholder="<?php echo $lang_login['two_step_code_tooltip'] ?>" style="width: 180px; border: 1px solid gray"/></td></tr>
+<?php $formInputStyle = 'style="width: min(100%, 320px); min-width: 180px; border: 1px solid gray; box-sizing: border-box"'; ?>
+<tr><td class="rowhead"><?php echo $lang_login['rowhead_username']?></td><td class="rowfollow" align="left"><input type="text" class="username" name="username" autocomplete="username" <?php echo $formInputStyle; ?> /></td></tr>
+<tr><td class="rowhead"><?php echo $lang_login['rowhead_password']?></td><td class="rowfollow" align="left"><input type="password" <?php echo $passwordName ?> autocomplete="current-password" <?php echo $formInputStyle; ?> /></td></tr>
+<tr><td class="rowhead"><?php echo $lang_login['rowhead_two_step_code']?></td><td class="rowfollow" align="left"><input type="text" name="two_step_code" inputmode="numeric" pattern="[0-9]*" placeholder="<?php echo $lang_login['two_step_code_tooltip'] ?>" <?php echo $formInputStyle; ?> /></td></tr>
 <?php
 show_image_code ();
 if ($securelogin == "yes")
@@ -85,17 +86,31 @@ elseif ($securetracker == "op")
 <tr><td class="toolbox" colspan="2" align="right"><input id="submit-btn" type="button" value="<?php echo $lang_login['button_login']?>" class="btn" /> <input type="reset" value="<?php echo $lang_login['button_reset']?>" class="btn" /></td></tr>
 </table>
 <?php
-
 if (isset($returnto)) {
     print("<input type=\"hidden\" name=\"returnto\" value=\"" . htmlspecialchars($returnto) . "\" />\n");
 }
 if ($useChallengeResponseAuthentication) {
     print('<input type="hidden" name="response" />');
 }
+\App\Repositories\UserPasskeyRepository::renderLogin();
 ?>
-
 </form>
-<p>[<b><a href="complains.php"><?= $lang_login['text_complain'] ?></a></b>]</p>
+<?php
+$oauthProviders = \App\Models\OauthProvider::query()
+    ->orderBy("priority", 'desc')
+    ->where('enabled', '=', 1)
+    ->get();
+$items = [];
+foreach ($oauthProviders as $oauthProvider) {
+    $items[] = sprintf('[<b><a href="oauth/redirect/%s">%s</a></b>]', $oauthProvider->uuid, $oauthProvider->name);
+}
+if (!empty($items)) {
+    echo sprintf("<p>%s: %s</p>", $lang_login['other_methods'], implode("&nbsp;&nbsp;", $items));
+}
+if (\App\Models\Setting::getIsComplainEnabled()) {
+    echo sprintf('<p>[<b><a href="complains.php">%s</a></b>]</p>', $lang_login['text_complain']);
+}
+?>
 <p><?php echo $lang_login['p_no_account_signup']?></p>
 <?php
 if ($smtptype != 'none'){
@@ -120,4 +135,5 @@ print("</td></tr></table></form></td></tr></table>");
 ?>
 <?php
 render_password_challenge_js("login-form", "username", "password");
+\Nexus\Nexus::js('js/passkey.js', 'footer', true);
 stdfoot();

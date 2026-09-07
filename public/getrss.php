@@ -39,7 +39,7 @@ if ($showaudiocodec) $audiocodecs = searchbox_item_list("audiocodecs", $brsectio
 }
 stdhead($lang_getrss['head_rss_feeds']);
 $query = [];
-$allowed_showrows=array('10','50','100','200');
+$allowed_showrows=array('10','50');
 $stickyTypes = [
     0 => nexus_trans('torrent.pos_state_normal'),
     1 => nexus_trans('torrent.pos_state_sticky'),
@@ -145,6 +145,11 @@ if ($_SERVER['REQUEST_METHOD'] == "POST") {
 	if (!empty($_POST["itemuploader"]))
 	{
 		$query[] = "iuplder=1";
+	}
+	$incldesc = intval($_POST['incldesc'] ?? 0);
+	if ($incldesc === 1)
+	{
+		$query[] = "incldesc=1";
 	}
 	$searchstr = mysql_real_escape_string(trim($_POST["search"] ?? ''));
 //	if (empty($searchstr))
@@ -315,7 +320,7 @@ $categories = build_search_box_category_table($browsecatmode, 'yes', 'torrents.p
 print($categories);
 if (get_setting('main.spsct') == 'yes') {
     print '<div style="height: 1px;background-color: #eee;margin: 10px 0"></div>';
-    $categoriesSpecial = build_search_box_category_table($specialcatmode, 'yes', 'torrents.php?allsec=1&', false, 3, '', ['section_name' => true]);
+    $categoriesSpecial = build_search_box_category_table($specialcatmode, 'yes', 'special.php?allsec=1&', false, 3, '', ['section_name' => true]);
     print($categoriesSpecial);
 }
 ?>
@@ -326,6 +331,13 @@ if (get_setting('main.spsct') == 'yes') {
 </td>
 <td class="rowfollow" align="left">
 <input type="radio" name="inclbookmarked" id="inclbookmarked0" value="0" checked="checked" /><label for="inclbookmarked0"><?php echo $lang_getrss['text_all']?></label>&nbsp;<input type="radio" name="inclbookmarked" id="inclbookmarked1" value="1" /><label for="inclbookmarked1"><?php echo $lang_getrss['text_only_bookmarked']?></label><div><?php echo $lang_getrss['text_show_bookmarked_note']?></div>
+</td>
+</tr>
+<tr>
+<td class="rowhead"><?php echo $lang_getrss['row_show_description']?>
+</td>
+<td class="rowfollow" align="left">
+<input type="radio" name="incldesc" id="incldesc1" value="1" /><label for="incldesc1"><?php echo $lang_getrss['text_yes']?></label>&nbsp;<input type="radio" name="incldesc" id="incldesc0" value="0" checked="checked" /><label for="incldesc0"><?php echo $lang_getrss['text_no']?></label>
 </td>
 </tr>
     <tr>
@@ -365,17 +377,6 @@ if (get_setting('main.spsct') == 'yes') {
     }
 ?>
 </select></td></tr>
-<tr><td class="rowhead"><?php echo $lang_getrss['row_keyword']?></td>
-<td class="rowfollow" align="left">
-<input type="text" name="search" style="width: 200px;" /> <?php echo $lang_getrss['text_with']?>
-<select name="search_mode" style="width: 60px;">
-<option value="0"><?php echo $lang_getrss['select_and'] ?></option>
-<option value="2"><?php echo $lang_getrss['select_exact'] ?></option>
-</select>
-<?php echo $lang_getrss['text_mode']?>
-<div><?php echo $lang_getrss['text_keyword_note'] ?></div>
-</td>
-</tr>
 <tr>
 <td colspan="2" align="center">
 <input type="submit" value="<?php echo $lang_getrss['submit_generatte_rss_link']?>" />

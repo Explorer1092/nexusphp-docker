@@ -1,6 +1,7 @@
 <?php
 namespace App\Auth;
 
+use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Auth\GuardHelpers;
 use Illuminate\Contracts\Auth\Authenticatable;
@@ -46,11 +47,16 @@ class NexusWebGuard implements StatefulGuard
         }
         $credentials = $this->request->cookie();
         if ($this->validate($credentials)) {
+            /**
+             * @var User $user
+             */
             $user = $this->provider->retrieveByCredentials($credentials);
+            if (empty($user)) {
+                return null;
+            }
             if ($this->provider->validateCredentials($user, $credentials)) {
-               if ($user->checkIsNormal()) {
-                   return $this->user = $user;
-               }
+                $user->checkIsNormal();
+                return $this->user = $user;
             }
         }
     }
@@ -58,7 +64,6 @@ class NexusWebGuard implements StatefulGuard
 
     /**
      * Validate a user's credentials.
-     *
      * @param  array  $credentials
      * @return bool
      */

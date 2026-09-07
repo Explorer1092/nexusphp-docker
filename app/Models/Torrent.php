@@ -5,6 +5,7 @@ namespace App\Models;
 use App\Repositories\TagRepository;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Casts\Attribute;
+use Nexus\Database\NexusDB;
 
 class Torrent extends NexusModel
 {
@@ -13,12 +14,17 @@ class Torrent extends NexusModel
         'category', 'source', 'medium', 'codec', 'standard', 'processing', 'team', 'audiocodec',
         'size', 'added', 'type', 'numfiles', 'owner', 'nfo', 'sp_state', 'promotion_time_type',
         'promotion_until', 'anonymous', 'url', 'pos_state', 'cache_stamp', 'picktype', 'picktime',
-        'last_reseed', 'leechers', 'seeders', 'cover', 'last_action',
+        'last_reseed', 'leechers', 'seeders', 'cover', 'last_action', 'info_hash', 'pieces_hash',
         'times_completed', 'approval_status', 'banned', 'visible', 'pos_state_until', 'price',
+        'hr',
     ];
 
     const VISIBLE_YES = 'yes';
     const VISIBLE_NO = 'no';
+
+    const FILTER_VISIBLE_ALL = '0';
+    const FILTER_VISIBLE_YES = '1';
+    const FILTER_VISIBLE_NO = '2';
 
     const BANNED_YES = 'yes';
     const BANNED_NO = 'no';
@@ -27,6 +33,11 @@ class Torrent extends NexusModel
         'added' => 'datetime',
         'promotion_until' => 'datetime',
         'pos_state_until' => 'datetime',
+        'last_action' => 'datetime',
+    ];
+
+    protected $hidden = [
+        'info_hash',
     ];
 
     public static $commentFields = [
@@ -164,11 +175,48 @@ class Torrent extends NexusModel
 
     const NFO_VIEW_STYLE_DOS = 'magic';
     const NFO_VIEW_STYLE_WINDOWS = 'latin-1';
+    const REQUIRE_SEED_SECTION_DEFAULT_PROMOTION_STATE = self::PROMOTION_FREE;
+    const REQUIRE_SEED_SECTION_DEFAULT_BONUS_ADDITION_FACTOR = 0;
+    const REQUIRE_SEED_SECTION_DEFAULT_TORRENT_COUNT_MAX = 100;
+    const REQUIRE_SEED_SECTION_PROMOTION_STATE_CACHE_KEY = "REQUIRE_SEED_SECTION_PROMOTION_STATE_CACHE";
+    const REQUIRE_SEED_SECTION_TORRENT_ON_LIST_CACHE_KEY = "REQUIRE_SEED_SECTION_TORRENT_ON_LIST_CACHE";
+    const REQUIRE_SEED_SECTION_TORRENT_USER_CACHE_KEY = "REQUIRE_SEED_SECTION_TORRENT_USER_CACHE";
 
     public static array $nfoViewStyles = [
         self::NFO_VIEW_STYLE_DOS => ['text' => 'DOS-vy'],
         self::NFO_VIEW_STYLE_WINDOWS => ['text' => 'Windows-vy'],
     ];
+
+    public function scopeWhereInfoHash($query, string $binaryHash)
+    {
+        if (NexusDB::isPgsql()) {
+            return $query->whereRaw(
+                "info_hash = decode(?, 'hex')",
+                [bin2hex($binaryHash)]
+            );
+        } elseif (NexusDB::isMysql()) {
+            return $query->where('info_hash', $binaryHash);
+        }
+        throw new \RuntimeException("Not supported database");
+    }
+
+    /**
+     * 重写获取 info_hash 的方法，确保从数据库读出时是正确的格式
+     * 注意：不要使用 getInfoHashAttribute()，不带缓存，第1次有值，第2次指针到头，数据是空！！！
+     */
+    public function infoHash(): Attribute
+    {
+        return Attribute::make(
+            get: function ($value) {
+                // PostgreSQL 返回 bytea 时可能是十六进制流或资源
+                if (is_resource($value)) {
+                    rewind($value);
+                    return stream_get_contents($value);
+                }
+                return $value;
+            }
+        )->shouldCache();
+    }
 
     public function getPickInfoAttribute()
     {
@@ -334,15 +382,6 @@ class Torrent extends NexusModel
         return implode('', $html);
     }
 
-    public static function getBasicInfo(): array
-    {
-        $result = [];
-        foreach (self::$basicRelations as $relation) {
-            $result[$relation] = nexus_trans("torrent.show.$relation");
-        }
-        return $result;
-    }
-
     public static function listPosStates($onlyKeyValue = false, $valueField = 'text'): array
     {
         $result = self::$posStates;
@@ -380,6 +419,11 @@ class Torrent extends NexusModel
         }
 
         return true;
+    }
+
+    public function getSubCategoryLabel($field): string
+    {
+        return $this->basic_category->search_box->getTaxonomyLabel($field);
     }
 
     public function bookmarks(): \Illuminate\Database\Eloquent\Relations\HasMany
@@ -452,7 +496,7 @@ class Torrent extends NexusModel
         return $this->belongsTo(Source::class, 'source');
     }
 
-    public function basic_media()
+    public function basic_medium()
     {
         return $this->belongsTo(Media::class, 'medium');
     }
@@ -477,9 +521,19 @@ class Torrent extends NexusModel
         return $this->belongsTo(Team::class, 'team');
     }
 
-    public function basic_audio_codec()
+    public function basic_audiocodec()
     {
         return $this->belongsTo(AudioCodec::class, 'audiocodec');
+    }
+
+    public function claim_users(): \Illuminate\Database\Eloquent\Relations\BelongsToMany
+    {
+        return $this->belongsToMany(User::class, 'claims', 'torrent_id');
+    }
+
+    public function claims()
+    {
+        return $this->hasMany(Claim::class, 'torrent_id');
     }
 
     public function scopeVisible($query, $visible = self::VISIBLE_YES)
@@ -499,8 +553,16 @@ class Torrent extends NexusModel
 
     public function tags(): \Illuminate\Database\Eloquent\Relations\BelongsToMany
     {
+        $idsString = TagRepository::getOrderByFieldIdString();
+        if (NexusDB::isPgsql()) {
+            $orderByRaw = "array_position(ARRAY[$idsString]::int[], tags.id)";
+        } else if (NexusDB::isMysql()) {
+            $orderByRaw = "FIELD(tags.id, $idsString)";
+        } else {
+            throw new \RuntimeException("Unsupported database");
+        }
         return $this->belongsToMany(Tag::class, 'torrent_tags', 'torrent_id', 'tag_id')
-            ->orderByRaw(sprintf("field(`tags`.`id`,%s)", TagRepository::getOrderByFieldIdString()));
+            ->orderByRaw($orderByRaw);
     }
 
     public function reward_logs(): \Illuminate\Database\Eloquent\Relations\HasMany

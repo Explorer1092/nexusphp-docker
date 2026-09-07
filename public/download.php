@@ -1,4 +1,7 @@
 <?php
+
+use Rhilip\Bencode\TorrentFile;
+
 require_once("../include/bittorrent.php");
 dbconn();
 require_once ROOT_PATH . get_langfile_path("functions.php");
@@ -62,10 +65,11 @@ if (!empty($_REQUEST['downhash'])) {
 	}
 }
 //User may choose to download torrent from RSS. So log ip changes when downloading torrents.
-if ($iplog1 == "yes") {
-	if (($oldip != $CURUSER["ip"]) && $CURUSER["ip"])
-	sql_query("INSERT INTO iplog (ip, userid, access) VALUES (" . sqlesc($CURUSER['ip']) . ", " . $CURUSER['id'] . ", '" . $CURUSER['last_access'] . "')");
-}
+//if ($iplog1 == "yes") {
+//	if (($oldip != $CURUSER["ip"]) && $CURUSER["ip"])
+//	sql_query("INSERT INTO iplog (ip, userid, access) VALUES (" . sqlesc($CURUSER['ip']) . ", " . $CURUSER['id'] . ", '" . $CURUSER['last_access'] . "')");
+//}
+\App\Repositories\IpLogRepository::saveToCache($CURUSER['id']);
 //User may choose to download torrent from RSS. So update his last_access and ip when downloading torrents.
 sql_query("UPDATE users SET last_access = ".sqlesc(date("Y-m-d H:i:s")).", ip = ".sqlesc($CURUSER['ip'])."  WHERE id = ".sqlesc($CURUSER['id']));
 
@@ -84,14 +88,14 @@ if ($CURUSER['downloadpos']=="no") {
     denyDownload();
 }
 
-$trackerSchemaAndHost = get_tracker_schema_and_host();
-$ssl_torrent = $trackerSchemaAndHost['ssl_torrent'];
-$base_announce_url = $trackerSchemaAndHost['base_announce_url'];
+//$trackerSchemaAndHost = get_tracker_schema_and_host();
+//$ssl_torrent = $trackerSchemaAndHost['ssl_torrent'];
+//$base_announce_url = $trackerSchemaAndHost['base_announce_url'];
 
-$res = sql_query("SELECT torrents.name, torrents.filename, torrents.save_as, torrents.size, torrents.owner, torrents.banned, torrents.approval_status, torrents.price, categories.mode as search_box_id FROM torrents left join categories on torrents.category = categories.id WHERE torrents.id = ".sqlesc($id)) or sqlerr(__FILE__, __LINE__);
+$res = sql_query("SELECT torrents.name, torrents.filename, torrents.save_as, torrents.size, torrents.owner, torrents.banned, torrents.approval_status, torrents.price, torrents.added, categories.mode as search_box_id FROM torrents left join categories on torrents.category = categories.id WHERE torrents.id = ".sqlesc($id)) or sqlerr(__FILE__, __LINE__);
 $row = mysql_fetch_assoc($res);
 if (!$row) {
-    do_log("[TORRENT_NOT_EXISTS_IN_DATABASE] $id", 'error');
+    do_log("[TORRENT_NOT_EXISTS_IN_DATABASE] $id");
     httperr();
 }
 $fn = getFullDirectory("$torrent_dir/$id.torrent");
@@ -139,10 +143,13 @@ if (strlen($CURUSER['passkey']) != 32) {
 	$CURUSER['passkey'] = md5($CURUSER['username'].date("Y-m-d H:i:s").$CURUSER['passhash']);
 	sql_query("UPDATE users SET passkey=".sqlesc($CURUSER['passkey'])." WHERE id=".sqlesc($CURUSER['id']));
 }
-$dict = \Rhilip\Bencode\Bencode::load($fn);
-$dict['announce'] = $ssl_torrent . $base_announce_url . "?passkey=" . $CURUSER['passkey'];
-$dict['comment'] = getSchemeAndHttpHost(true) . "/details.php?id=" . $id;
-do_log(sprintf("[ANNOUNCE_URL], user: %s, torrent: %s, url: %s", $CURUSER['id'] ?? '', $id, $dict['announce']));
+$dict = TorrentFile::load($fn);
+$dict->cleanRootFields();
+$dict->setAnnounce(get_tracker_schema_and_host($CURUSER['tracker_url_id'], true) . "?passkey=" . $CURUSER['passkey']);
+$dict->setComment(getSchemeAndHttpHost(true) . "/details.php?id=" . $id);
+$dict->setCreatedBy($SITENAME);
+$dict->setCreationDate(strtotime($row['added']));
+do_log(sprintf("[ANNOUNCE_URL], user: %s, torrent: %s, url: %s", $CURUSER['id'] ?? '', $id, $dict->getAnnounce()));
 /**
  * does not support multi-tracker
  *
@@ -196,30 +203,10 @@ header ("Content-Transfer-Encoding: binary");
 */
 
 header("Content-Type: application/x-bittorrent");
-
-if ( str_replace("Gecko", "", $_SERVER['HTTP_USER_AGENT']) != $_SERVER['HTTP_USER_AGENT'])
-{
-	header ("Content-Disposition: attachment; filename=\"$torrentnameprefix.".$row["save_as"].".torrent\" ; charset=utf-8");
-}
-else if ( str_replace("Firefox", "", $_SERVER['HTTP_USER_AGENT']) != $_SERVER['HTTP_USER_AGENT'] )
-{
-	header ("Content-Disposition: attachment; filename=\"$torrentnameprefix.".$row["save_as"].".torrent\" ; charset=utf-8");
-}
-else if ( str_replace("Opera", "", $_SERVER['HTTP_USER_AGENT']) != $_SERVER['HTTP_USER_AGENT'] )
-{
-	header ("Content-Disposition: attachment; filename=\"$torrentnameprefix.".$row["save_as"].".torrent\" ; charset=utf-8");
-}
-else if ( str_replace("IE", "", $_SERVER['HTTP_USER_AGENT']) != $_SERVER['HTTP_USER_AGENT'] )
-{
-	header ("Content-Disposition: attachment; filename=".str_replace("+", "%20", rawurlencode("$torrentnameprefix." . $row["save_as"] .".torrent")));
-}
-else
-{
-	header ("Content-Disposition: attachment; filename=".str_replace("+", "%20", rawurlencode("$torrentnameprefix." . $row["save_as"] .".torrent")));
-}
+header("Content-Disposition: " . make_content_disposition($torrentnameprefix . $row["save_as"] . '.torrent'));
 
 //header ("Content-Disposition: attachment; filename=".$row["filename"]."");
 //ob_implicit_flush(true);
 //print(benc($dict));
-echo \Rhilip\Bencode\Bencode::encode($dict);
+echo $dict->dumpToString();
 ?>

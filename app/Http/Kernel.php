@@ -2,8 +2,10 @@
 
 namespace App\Http;
 
+use App\Http\Middleware\CheckSiteStatus;
 use App\Http\Middleware\Filament;
 use App\Http\Middleware\Locale;
+use App\Http\Middleware\LogUserIp;
 use Illuminate\Foundation\Http\Kernel as HttpKernel;
 
 class Kernel extends HttpKernel
@@ -25,6 +27,7 @@ class Kernel extends HttpKernel
 //        \Illuminate\Foundation\Http\Middleware\ConvertEmptyStringsToNull::class,
         \App\Http\Middleware\BootNexus::class,
         Locale::class,
+        LogUserIp::class,
     ];
 
     /**
@@ -46,7 +49,7 @@ class Kernel extends HttpKernel
         'api' => [
             'throttle:api',
             \Illuminate\Routing\Middleware\SubstituteBindings::class,
-//            \App\Http\Middleware\Platform::class,
+            CheckSiteStatus::class,
         ],
         'filament' => [
             \Illuminate\Session\Middleware\StartSession::class,
@@ -73,10 +76,8 @@ class Kernel extends HttpKernel
         'signed' => \Illuminate\Routing\Middleware\ValidateSignature::class,
         'throttle' => \Illuminate\Routing\Middleware\ThrottleRequestsWithRedis::class,
         'verified' => \Illuminate\Auth\Middleware\EnsureEmailIsVerified::class,
-        'permission' => \App\Http\Middleware\Permission::class,
-        'admin' => \App\Http\Middleware\Admin::class,
         'locale' => \App\Http\Middleware\Locale::class,
-        'user' => \App\Http\Middleware\User::class,
+        'checkUserStatus' => \App\Http\Middleware\CheckUserStatus::class,
     ];
 
     protected $middlewareAliases = [

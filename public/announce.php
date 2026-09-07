@@ -13,13 +13,13 @@ foreach (array("passkey","info_hash","peer_id","event") as $x)
         $GLOBALS[$x] = $_GET[$x];
 }
 // get integer type port, downloaded, uploaded, left from client
-foreach (array("port","downloaded","uploaded","left","compact","no_peer_id") as $x)
+foreach (array("port","downloaded","uploaded","left") as $x)
 {
     $GLOBALS[$x] = intval($_GET[$x] ?? 0);
 }
 //check info_hash, peer_id and passkey
 foreach (array("info_hash","peer_id","port","downloaded","uploaded","left") as $x)
-    if (!isset($x)) warn("Missing key: $x");
+    if (!isset($GLOBALS[$x])) warn("Missing key: $x");
 foreach (array("info_hash","peer_id") as $x)
     if (strlen($GLOBALS[$x]) != 20) warn("Invalid $x (" . strlen($GLOBALS[$x]) . " - " . rawurlencode($GLOBALS[$x]) . ")");
 if (isset($passkey) && strlen($passkey) != 32) warn("Invalid passkey (" . strlen($passkey) . " - $passkey)");
@@ -57,7 +57,8 @@ if ($redis->get("$torrentNotExistsKey:$info_hash")) {
     do_log("[ANNOUNCE] $msg");
     err($msg);
 }
-$torrentReAnnounceKey = sprintf('reAnnounceCheckByInfoHash:%s:%s', $userAuthenticateKey, $info_hash);
+$infoHashHex = sha1($info_hash);
+$torrentReAnnounceKey = sprintf('reAnnounceCheckByInfoHash:%s:%s', $userAuthenticateKey, $infoHashHex);
 if (!$isStoppedOrCompleted && !$isReAnnounce && !$redis->set($torrentReAnnounceKey, TIMENOW, ['nx', 'ex' => $frequencyInterval])) {
     $msg = "Request too frequent(h)";
     do_log(sprintf("[ANNOUNCE] %s key: %s already exists, value: %s", $msg, $torrentReAnnounceKey, TIMENOW));
@@ -111,21 +112,21 @@ $seeder = ($left == 0) ? "yes" : "no";
 
 // check passkey
 if (!$az = $Cache->get_value('user_passkey_'.$passkey.'_content')){
-	$res = sql_query("SELECT id, username, downloadpos, enabled, uploaded, downloaded, class, parked, clientselect, showclienterror, passkey, donor, donoruntil, seedbonus FROM users WHERE passkey=". sqlesc($passkey)." LIMIT 1");
+	$res = sql_query("SELECT id, username, downloadpos, enabled, uploaded, downloaded, class, parked, clientselect, showclienterror, passkey, donor, donoruntil, seedbonus, tracker_url_id FROM users WHERE passkey=". sqlesc($passkey)." LIMIT 1");
 	$az = mysql_fetch_array($res);
 	do_log("[check passkey], currentUser: " . nexus_json_encode($az));
 	$Cache->cache_value('user_passkey_'.$passkey.'_content', $az, 3600);
 }
 if (!$az) {
     $redis->set("$passkeyInvalidKey:$passkey", TIMENOW, ['ex' => 24*3600]);
-    warn("Invalid passkey! Re-download the .torrent from $BASEURL");
+    err("Invalid passkey! Re-download the .torrent from $BASEURL");
 }
 if ($az["enabled"] == "no")
-    warn("Your account is disabled!", 300);
+    err("Your account is disabled!", 300);
 elseif ($az["parked"] == "yes")
-    warn("Your account is parked! (Read the FAQ)", 300);
+    err("Your account is parked! (Read the FAQ)", 300);
 elseif ($az["downloadpos"] == "no")
-    warn("Your downloading privileges have been disabled! (Read the rules)", 300);
+    err("Your downloading privileges have been disabled! (Read the rules)", 300);
 
 $userid = intval($az['id'] ?? 0);
 unset($GLOBALS['CURUSER']);
@@ -133,6 +134,13 @@ $CURUSER = $GLOBALS["CURUSER"] = $az;
 $isDonor = is_donor($az);
 $az['__is_donor'] = $isDonor;
 $log = "user: $userid, isDonor: $isDonor, seeder: $seeder, ip: $ip, ipv4: $ipv4, ipv6: $ipv6";
+//check tracker url
+$trackerUrl = get_tracker_schema_and_host($az['tracker_url_id'], true);
+$currentUrl = getSchemeAndHttpHost();
+if (!str_contains($trackerUrl, $currentUrl)) {
+    do_log("announce check tracker url, trackerUrl: $trackerUrl does not contains: $currentUrl");
+    warn("you should announce to: $trackerUrl");
+}
 
 //3. CHECK IF CLIENT IS ALLOWED
 //$clicheck_res = check_client($peer_id,$agent,$client_familyid);
@@ -164,11 +172,15 @@ elseif ($az['showclienterror'] == 'yes'){
 }
 
 // check torrent based on info_hash
-$checkTorrentSql = "SELECT torrents.id, size, owner, sp_state, seeders, leechers, UNIX_TIMESTAMP(added) AS ts, added, banned, hr, approval_status, price, categories.mode FROM torrents left join categories on torrents.category = categories.id WHERE " . hash_where("info_hash", $info_hash);
+$tsField = \Nexus\Database\NexusDB::unixTimestampField('added');
+$infoHashField = \Nexus\Database\NexusDB::binaryField('info_hash');
+$infoHashFieldBindValue = \Nexus\Database\NexusDB::binaryFieldBindValue($info_hash);
+$checkTorrentSql = "SELECT torrents.id, size, owner, sp_state, seeders, leechers, times_completed, $tsField AS ts, added, banned, hr, approval_status, price, categories.mode FROM torrents left join categories on torrents.category = categories.id WHERE $infoHashField limit 1";
 if (!$torrent = $Cache->get_value('torrent_hash_'.$info_hash.'_content')){
-	$res = sql_query($checkTorrentSql);
+    $res = mysql_prepare($checkTorrentSql);
+    $res->execute(['info_hash' => $infoHashFieldBindValue]);
 	$torrent = mysql_fetch_array($res);
-	$Cache->cache_value('torrent_hash_'.$info_hash.'_content', $torrent, 350);
+    $Cache->cache_value('torrent_hash_'.$info_hash.'_content', $torrent, 350);
 }
 if (!$torrent) {
     $firstNeedle = "info_hash=";
@@ -193,6 +205,13 @@ if ($torrent['approval_status'] != \App\Models\Torrent::APPROVAL_STATUS_ALLOW &&
     }
 }
 
+if ($left > $torrent['size']) {
+    //disable download
+    (new \App\Repositories\UserRepository())->updateDownloadPrivileges(null, $userid, 'no', 'fake_announce');
+    do_log(sprintf("fake announce, user: %s, torrent: %s, announce left: %s > size: %s", $userid, $torrentid, $left, $torrent['size']), 'warn');
+    warn("fake announce");
+}
+
 // select peers info from peers table for this torrent
 
 $numpeers = $torrent["seeders"]+$torrent["leechers"];
@@ -211,7 +230,9 @@ if ($newnumpeers > $rsize)
 else $limit = "";
 
 $announce_wait = \App\Repositories\TrackerRepository::MIN_ANNOUNCE_WAIT_SECOND;
-$fields = "id, seeder, peer_id, ip, ipv4, ipv6, port, uploaded, downloaded, userid, last_action, UNIX_TIMESTAMP(last_action) as last_action_unix_timestamp, prev_action, (".TIMENOW." - UNIX_TIMESTAMP(last_action)) AS announcetime, UNIX_TIMESTAMP(prev_action) AS prevts";
+$lastActionField = \Nexus\Database\NexusDB::unixTimestampField('last_action');
+$prevActionField = \Nexus\Database\NexusDB::unixTimestampField('prev_action');
+$fields = "id, seeder, peer_id, ip, ipv4, ipv6, port, uploaded, downloaded, userid, last_action, $lastActionField as last_action_unix_timestamp, prev_action, (".TIMENOW." - $lastActionField) AS announcetime, $prevActionField AS prevts";
 //$peerlistsql = "SELECT ".$fields." FROM peers WHERE torrent = ".$torrentid." AND connectable = 'yes' ".$only_leech_query.$limit;
 /**
  * return all peers,include connectable no
@@ -236,13 +257,11 @@ $rep_dict = [
     "min interval" => (int)$announce_wait,
     "complete" => (int)$torrent["seeders"],
     "incomplete" => (int)$torrent["leechers"],
-    "peers" => [],  // By default it is a array object, only when `&compact=1` then it should be a string
+    "downloaded" => (int)$torrent["times_completed"],
+    "peers" => '',
+    "peers6" => '',
 ];
 
-if ($compact == 1) {
-    $rep_dict['peers'] = '';  // Change `peers` from array to string
-    $rep_dict['peers6'] = '';   // If peer use IPv6 address , we should add packed string in `peers6`
-}
 $GLOBALS['rep_dict'] = $rep_dict;
 if ($isReAnnounce) {
     do_log("$log, [YES_RE_ANNOUNCE]");
@@ -265,51 +284,22 @@ if (isset($event) && $event == "stopped") {
             continue;
         }
 
-        if ($compact == 1) {
-//            $peerField = filter_var($row['ip'],FILTER_VALIDATE_IP,FILTER_FLAG_IPV6) ? 'peers6' : 'peers';
-//            $rep_dict[$peerField] .= inet_pton($row["ip"]) . pack("n", $row["port"]);
-            if (!empty($row['ipv4'])) {
-                $rep_dict['peers'] .= inet_pton($row["ipv4"]) . pack("n", $row["port"]);
-            }
-            if (!empty($row['ipv6'])) {
-                $rep_dict['peers6'] .= inet_pton($row["ipv6"]) . pack("n", $row["port"]);
-            }
-        } else {
-//            $peer = [
-//                'ip' => $row["ip"],
-//                'port' => (int) $row["port"]
-//            ];
-//
-//            if ($no_peer_id == 1) {
-//                $peer['peer id'] = $row["peer_id"];
-//            }
-//            $rep_dict['peers'][] = $peer;
-            if (!empty($row['ipv4'])) {
-                $peer = [
-                    'peer_id' => $row['peer_id'],
-                    'ip' => $row['ipv4'],
-                    'port' => (int)$row['port'],
-                ];
-                if ($no_peer_id) unset($peer['peer_id']);
-                $rep_dict['peers'][] = $peer;
-            }
-            if (!empty($row['ipv6'])) {
-                $peer = [
-                    'peer_id' => $row['peer_id'],
-                    'ip' => $row['ipv6'],
-                    'port' => (int)$row['port'],
-                ];
-                if ($no_peer_id) unset($peer['peer_id']);
-                $rep_dict['peers'][] = $peer;
-            }
+        if (!empty($row['ipv4'])) {
+            $rep_dict['peers'] .= inet_pton($row["ipv4"]) . pack("n", $row["port"]);
+        }
+        if (!empty($row['ipv6'])) {
+            $rep_dict['peers6'] .= inet_pton($row["ipv6"]) . pack("n", $row["port"]);
         }
     }
 }
-$selfwhere = "torrent = $torrentid AND " . hash_where("peer_id", $peer_id) . " AND userid = $userid";
+$peerIdField = \Nexus\Database\NexusDB::binaryField('peer_id');
+$peerIdFieldBindValue = \Nexus\Database\NexusDB::binaryFieldBindValue($peer_id);
+$selfwhere = "torrent = $torrentid AND $peerIdField AND userid = $userid";
 //no found in the above random selection
 if (!isset($self))
 {
-	$res = sql_query("SELECT $fields FROM peers WHERE $selfwhere LIMIT 1");
+	$res = mysql_prepare("SELECT $fields FROM peers WHERE $selfwhere LIMIT 1");
+    $res->execute(['peer_id' => $peerIdFieldBindValue]);
 	$row = mysql_fetch_assoc($res);
 	if ($row)
 	{
@@ -346,6 +336,48 @@ if ($isSeedBoxRuleEnabled) {
 $log .= ", [SEED_BOX], isSeedBoxRuleEnabled: $isSeedBoxRuleEnabled, isIPSeedBox: $isIPSeedBox";
 
 do_log($log);
+
+//handle paid torrent
+if (
+    $seeder == 'no'
+    && isset($az['seedbonus'])
+    && isset($torrent['price'])
+    && $torrent['price'] > 0
+    && $torrent['owner'] != $userid
+    && get_setting("torrent.paid_torrent_enabled") == "yes"
+) {
+    $torrentRep = new \App\Repositories\TorrentRepository();
+    $buyStatus = $torrentRep->getBuyStatus($userid, $torrentid);
+    do_log("user: $userid buy torrent: $torrentid, status: $buyStatus");
+    if ($buyStatus > 0) {
+        do_log(sprintf("user: %s buy torrent： %s fail count: %s", $userid, $torrentid, $buyStatus), "error");
+        if ($buyStatus > 3) {
+            //warn
+            \App\Utils\MsgAlert::getInstance()->add(
+                "announce_paid_torrent_too_many_times",
+                time() + 86400,
+                "announce to paid torrent and fail too many times, please make sure you have enough bonus!",
+                "",
+                "black"
+            );
+        }
+        if ($buyStatus > 10) {
+            //disable download
+            (new \App\Repositories\UserRepository())->updateDownloadPrivileges(null, $userid, 'no', 'announce_paid_torrent_too_many_times');
+        }
+        \Nexus\Nexus::dispatchQueueJob(new \App\Jobs\BuyTorrent($userid, $torrentid));
+        //already fail, add fail times
+        $torrentRep->addBuyFailCache($userid, $torrentid);
+        warn("purchase in progress, please try again later, and make sure you have enough bonus", 300);
+    }
+    if ($buyStatus == \App\Repositories\TorrentRepository::BUY_STATUS_UNKNOWN) {
+        //just enqueue job
+        \Nexus\Nexus::dispatchQueueJob(new \App\Jobs\BuyTorrent($userid, $torrentid));
+        warn("purchase started, please wait", 300);
+    }
+}
+
+$leechTimeNoSeeder = "";
 
 // current peer_id, or you could say session with tracker not found in table peers
 if (!isset($self))
@@ -393,42 +425,6 @@ if (!isset($self))
 			}
 		}
 	}
-    if (
-        $seeder == 'no'
-        && isset($az['seedbonus'])
-        && isset($torrent['price'])
-        && $torrent['price'] > 0
-        && $torrent['owner'] != $userid
-        && get_setting("torrent.paid_torrent_enabled") == "yes"
-    ) {
-        $torrentRep = new \App\Repositories\TorrentRepository();
-        $buyStatus = $torrentRep->getBuyStatus($userid, $torrentid);
-        if ($buyStatus > 0) {
-            do_log(sprintf("user: %v buy torrent： %v fail count: %v", $userid, $torrentid, $buyStatus), "error");
-            if ($buyStatus > 3) {
-                //warn
-                \App\Utils\MsgAlert::getInstance()->add(
-                    "announce_paid_torrent_too_many_times",
-                    time() + 86400,
-                    "announce to paid torrent and fail too many times, please make sure you have enough bonus!",
-                    "",
-                    "black"
-                );
-            }
-            if ($buyStatus > 10) {
-                //disable download
-                (new \App\Repositories\UserRepository())->updateDownloadPrivileges(null, $userid, 'no', 'announce_paid_torrent_too_many_times');
-            }
-            //already fail, add fail times
-            $torrentRep->addBuyFailCache($userid, $torrentid);
-            warn("purchase fail, please try again later, please make sure you have enough bonus", 300);
-        }
-        if ($buyStatus == \App\Repositories\TorrentRepository::BUY_STATUS_UNKNOWN) {
-            //just enqueue job
-            \App\Utils\ThirdPartyJob::addBuyTorrent($userid, $torrentid);
-            warn("purchase in progress, please wait", 300);
-        }
-    }
 }
 else // continue an existing session
 {
@@ -455,13 +451,18 @@ else // continue an existing session
 	}
 
 	do_log("upthis: $upthis, downthis: $downthis, announcetime: $announcetime, is_cheater: $is_cheater");
-    $snatchInfo = get_snatch_info($torrentid, $userid);
+    if (!isset($snatchInfo)) {
+        $snatchInfo = get_snatch_info($torrentid, $userid);
+    }
 	if (!$is_cheater && ($trueupthis > 0 || $truedownthis > 0))
 	{
         $dataTraffic = getDataTraffic($torrent, $_GET, $az, $self, $snatchInfo, apply_filter('torrent_promotion', $torrent));
         $USERUPDATESET[] = "uploaded = uploaded + " . $dataTraffic['uploaded_increment_for_user'];
         $USERUPDATESET[] = "downloaded = downloaded + " . $dataTraffic['downloaded_increment_for_user'];
 	}
+    if ($torrent['seeders'] <= 0 && $seeder == 'no' && $self['announcetime'] > 0) {
+        $leechTimeNoSeeder = ", leech_time_no_seeder = leech_time_no_seeder + {$self['announcetime']}";
+    }
 }
 
 $dt = sqlesc(date("Y-m-d H:i:s"));
@@ -477,7 +478,7 @@ if (isset($self) && $event == "stopped")
 	{
 		$updateset[] = ($self["seeder"] == "yes" ? "seeders = seeders - 1" : "leechers = leechers - 1");
         $hasChangeSeederLeecher = true;
-		sql_query("UPDATE snatched SET uploaded = uploaded + $trueupthis, downloaded = downloaded + $truedownthis, to_go = $left, $announcetime, last_action = ".$dt." WHERE id = {$snatchInfo['id']}") or err("SL Err 1");
+		sql_query("UPDATE snatched SET uploaded = uploaded + $trueupthis, downloaded = downloaded + $truedownthis, to_go = $left, $announcetime $leechTimeNoSeeder, last_action = ".$dt." WHERE id = {$snatchInfo['id']}") or err("SL Err 1");
 	}
 }
 elseif(isset($self))
@@ -500,7 +501,7 @@ elseif(isset($self))
             $hasChangeSeederLeecher = true;
         }
 		if (!empty($snatchInfo)) {
-            sql_query("UPDATE snatched SET uploaded = uploaded + $trueupthis, downloaded = downloaded + $truedownthis, to_go = $left, $announcetime, last_action = ".$dt." $finished_snatched WHERE id = {$snatchInfo['id']}") or err("SL Err 2");
+            sql_query("UPDATE snatched SET uploaded = uploaded + $trueupthis, downloaded = downloaded + $truedownthis, to_go = $left, $announcetime, last_action = ".$dt." $finished_snatched $leechTimeNoSeeder WHERE id = {$snatchInfo['id']}") or err("SL Err 2");
             do_action('snatched_saved', $torrent, $snatchInfo);
         }
 	}
@@ -508,8 +509,10 @@ elseif(isset($self))
 else
 {
     if ($event != 'stopped') {
-        $isPeerExistResultSet = sql_query("select id from peers where $selfwhere limit 1");
-        if (mysql_num_rows($isPeerExistResultSet) == 0) {
+        $stmt = mysql_prepare("select id from peers where $selfwhere limit 1");
+        $stmt->execute(['peer_id' => bin2hex($peer_id)]);
+        $isPeerExistResultSet = mysql_fetch_assoc($stmt);
+        if (empty($isPeerExistResultSet)) {
             $connectable = "yes";
             $insertPeerSql = "INSERT INTO peers (torrent, userid, peer_id, ip, port, connectable, uploaded, downloaded, to_go, started, last_action, seeder, agent, downloadoffset, uploadoffset, passkey, ipv4, ipv6, is_seed_box) VALUES ($torrentid, $userid, ".sqlesc($peer_id).", ".sqlesc($ip).", $port, '$connectable', $uploaded, $downloaded, $left, $dt, $dt, '$seeder', ".sqlesc($agent).", $downloaded, $uploaded, ".sqlesc($passkey).", ".sqlesc($ipv4).", ".sqlesc($ipv6).", ".intval($isIPSeedBox).")";
             do_log("[INSERT PEER] peer not exists for $selfwhere, do insert with $insertPeerSql");
@@ -544,40 +547,51 @@ if (($left > 0 || $event == "completed") && $az['class'] < \App\Models\HitAndRun
     $hrMode = \App\Models\HitAndRun::getConfig('mode', $torrent['mode']);
     $hrLog = sprintf("[HR_LOG] user: %d, torrent: %d, hrMode: %s", $userid, $torrentid, $hrMode);
     if ($hrMode == \App\Models\HitAndRun::MODE_GLOBAL || ($hrMode == \App\Models\HitAndRun::MODE_MANUAL && $torrent['hr'] == \App\Models\Torrent::HR_YES)) {
-        $hrCacheKey = sprintf("hit_and_run:%d:%d", $userid, $torrentid);
-        $hrExists = \Nexus\Database\NexusDB::remember($hrCacheKey, mt_rand(86400*365*5, 86400*365*10), function () use ($torrentid, $userid) {
-            return \App\Models\HitAndRun::query()->where("uid", $userid)->where("torrent_id", $torrentid)->exists() ? 1 : 0;
+        //change key to expire cache, so ttl don't set too long
+        $hrCacheKey = \App\Models\HitAndRun::getCacheKey( $userid, $torrentid);
+        $hrExists = \Nexus\Database\NexusDB::remember($hrCacheKey, mt_rand(86400, 86400*3), function () use ($torrentid, $userid) {
+            $record = \App\Models\HitAndRun::query()->where("uid", $userid)->where("torrent_id", $torrentid)->first();
+            return $record ? $record->toJson() : null;
         });
         $hrLog .= ", hrExists: $hrExists";
         if (!$hrExists) {
             //last check include rate
-            $includeRate = \App\Models\HitAndRun::getConfig('include_rate', $torrent['mode']);
-            if ($includeRate === "" || $includeRate === null) {
-                //not set yet
-                $includeRate = 1;
-            }
+            $includeRate = (float)\App\Models\HitAndRun::getConfig('include_rate', $torrent['mode']);
+//            if ($includeRate === "" || $includeRate === null) {
+//                //not set yet
+//                $includeRate = 1;
+//            }
             $hrLog .= ", includeRate: $includeRate";
             //get newest snatch info
-            $snatchInfo = get_snatch_info($torrentid, $userid);
+            if (!isset($snatchInfo)) {
+                $snatchInfo = get_snatch_info($torrentid, $userid);
+            }
             $requiredDownloaded = $torrent['size'] * $includeRate;
             if ($snatchInfo['downloaded'] >= $requiredDownloaded) {
                 $nowStr = date('Y-m-d H:i:s');
                 $sql = sprintf(
-                    "insert into hit_and_runs (uid, torrent_id, snatched_id, created_at, updated_at) values (%d, %d, %d, '%s', '%s') on duplicate key update updated_at = '%s'",
-                    $userid, $torrentid, $snatchInfo['id'], $nowStr, $nowStr, $nowStr
+                    "insert into hit_and_runs (uid, torrent_id, snatched_id, created_at, updated_at) values (%d, %d, %d, '%s', '%s') %s",
+                    $userid, $torrentid, $snatchInfo['id'], $nowStr, $nowStr, \Nexus\Database\NexusDB::upsertField(['uid', 'torrent_id'], ['updated_at'])
                 );
                 $affectedRows = sql_query($sql);
-                do_log("$hrLog, total downloaded: {$snatchInfo['downloaded']} >= required: $requiredDownloaded, [INSERT_H&R], sql: $sql, affectedRows: $affectedRows");
+                $hitAndRunId = mysql_insert_id();
+                do_log("$hrLog, total downloaded: {$snatchInfo['downloaded']} >= required: $requiredDownloaded, [INSERT_H&R], sql: $sql, affectedRows: $affectedRows, hitAndRunId: $hitAndRunId");
+                if ($hitAndRunId > 0) {
+                    sql_query("update snatched set hit_and_run_id = $hitAndRunId where id = {$snatchInfo['id']}");
+                    $hitAndRunRecord = \App\Models\HitAndRun::query()->where("uid", $userid)->where("torrent_id", $torrentid)->first();
+                    fire_event(\App\Enums\ModelEventEnum::HIT_AND_RUN_CREATED, $hitAndRunRecord);
+                }
             } else {
                 do_log("$hrLog, total downloaded: {$snatchInfo['downloaded']} < required: $requiredDownloaded", "debug");
             }
         } else {
-            do_log("$hrLog, already exists", "debug");
+            do_log("$hrLog, already exists", 'debug');
         }
     } else {
         do_log("$hrLog, not match", "debug");
     }
 }
+
 // revert to only increment/decrement
 //if (isset($event) && !empty($event)) {
 //    $updateset[] = 'seeders = ' . get_row_count("peers", "where torrent = $torrentid and to_go = 0");
@@ -596,6 +610,7 @@ if (count($updateset) || $hasChangeSeederLeecher) // Update only when there is c
 if($client_familyid != 0 && $client_familyid != $az['clientselect']) {
     $USERUPDATESET[] = "clientselect = ".sqlesc($client_familyid);
 }
+$USERUPDATESET[] = "last_announce_at = $dt";
 /**
  * VIP do not calculate downloaded
  * @since 1.7.13
@@ -616,6 +631,13 @@ if(count($USERUPDATESET) && $userid)
 $lockKey = sprintf("record_batch_lock:%s:%s", $userid, $torrentid);
 if ($redis->set($lockKey, TIMENOW, ['nx', 'ex' => $autoclean_interval_one])) {
     \App\Repositories\CleanupRepository::recordBatch($redis, $userid, $torrentid);
+    \App\Repositories\IpLogRepository::saveToCache($userid, null, [$ip]);
+}
+if (\App\Repositories\RequireSeedTorrentRepository::shouldRecordUser($redis, $userid, $torrentid)) {
+    if (!isset($snatchInfo)) {
+        $snatchInfo = get_snatch_info($torrentid, $userid);
+    }
+    \App\Repositories\RequireSeedTorrentRepository::recordUser($redis, $userid, $torrentid, $snatchInfo);
 }
 do_action('announced', $torrent, $az, $_REQUEST);
 benc_resp($rep_dict);

@@ -19,7 +19,7 @@
         "files": []
     },
     "require": {
-        "php": "^8.2",
+        "php": ">=8.2 <8.6",
         "ext-bcmath": "*",
         "ext-curl": "*",
         "ext-gd": "*",
@@ -29,39 +29,45 @@
         "ext-mbstring": "*",
         "ext-mysqli": "*",
         "ext-pcntl": "*",
+        "ext-posix": "*",
         "ext-redis": "*",
+        "ext-sqlite3": "*",
         "ext-xml": "*",
         "ext-zend-opcache": "*",
         "ext-zip": "*",
-        "ext-posix": "*",
+        "ext-pdo": "*",
         "calebporzio/sushi": "^2.5",
+        "cybercog/laravel-clickhouse": "dev-master",
+        "duck7000/imdb-graphql-php": "^3.2",
         "elasticsearch/elasticsearch": "^7.16",
-        "filament/filament": "^3.2",
-        "flowframe/laravel-trend": "^0.3",
+        "filament/filament": "~5.0",
+        "flowframe/laravel-trend": "^0.4",
         "geoip2/geoip2": "~2.0",
         "google/auth": "1.44.0",
-        "imdbphp/imdbphp": "^8.0",
         "irazasyed/telegram-bot-sdk": "^3.11",
-        "laravel/framework": "^11.0",
+        "laravel/framework": "^12.0",
+        "laravel/horizon": "^5.31",
         "laravel/passport": "^12.0",
         "laravel/sanctum": "^4.0",
         "laravel/tinker": "^2.5",
+        "lbuchs/webauthn": "^2.2",
         "league/flysystem-sftp-v3": "^3.0",
         "meilisearch/meilisearch-php": "^1.0",
         "orangehill/iseed": "^3.0",
         "phpgangsta/googleauthenticator": "dev-master",
-        "rhilip/bencode": "^2.0",
-        "rlanvin/php-ip": "^3.0"
+        "rhilip/bencode": "^2.5.0",
+        "rlanvin/php-ip": "^3.0",
+        "spatie/laravel-activitylog": "^4.10",
+        "stichoza/google-translate-php": "^5.2"
     },
     "require-dev": {
-        "fakerphp/faker": "^1.9.1",
+        "fakerphp/faker": "^1.23",
         "kitloong/laravel-migrations-generator": "^7.0",
         "laravel-lang/lang": "^15.10",
         "laravel-lang/publisher": "^16.0",
-        "mockery/mockery": "^1.4.2",
-        "nunomaduro/collision": "^8.1",
-        "phpunit/phpunit": "^10.0",
-        "spatie/laravel-ignition": "^2.0"
+        "mockery/mockery": "^1.6",
+        "nunomaduro/collision": "^8.6",
+        "phpunit/phpunit": "^11.0"
     },
     "autoload-dev": {
         "psr-4": {
@@ -82,7 +88,8 @@
             "@php artisan key:generate --ansi"
         ],
         "post-update-cmd": [
-            "@php artisan filament:upgrade"
+            "@php artisan filament:upgrade",
+            "@php artisan livewire:publish --assets"
         ]
     },
     "extra": {

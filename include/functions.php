@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\SearchBox;
+use App\Models\TorrentExtra;
 use Illuminate\Support\HtmlString;
 use Illuminate\Support\Str;
 
@@ -44,7 +45,8 @@ function get_langfile_path($script_name ="", $target = false, $lang_folder = "")
 	{
 		$lang_folder = $CURLANGDIR;
 	}
-	return "lang/" . ($target == false ? $lang_folder : "_target") ."/lang_". ( $script_name == "" ? substr(strrchr($_SERVER['SCRIPT_NAME'],'/'),1) : $script_name);
+	$result = "lang/" . ($target == false ? $lang_folder : "_target") ."/lang_". ( $script_name == "" ? substr(strrchr($_SERVER['SCRIPT_NAME'],'/'),1) : $script_name);
+    return $result;
 }
 
 function get_row_sum($table, $field, $suffix = "")
@@ -95,7 +97,6 @@ function sqlerr($file = '', $line = '')
 
 function format_quotes($s)
 {
-	global $lang_functions;
 	preg_match_all('/\\[quote.*?\\]/i', $s, $result, PREG_PATTERN_ORDER);
 	$openquotecount = count($openquote = $result[0]);
 	preg_match_all('/\\[\/quote\\]/i', $s, $result, PREG_PATTERN_ORDER);
@@ -121,46 +122,47 @@ function format_quotes($s)
 	for ($i=0; $i < count($openval); $i++)
 	if ($openval[$i] > $closeval[$i]) return $s; // Cannot close before opening. Return raw string...
 
-
-	$s = preg_replace("/\\[quote\\]/i","<fieldset><legend> ".$lang_functions['text_quote']." </legend><br />",$s);
-	$s = preg_replace("/\\[quote=(.+?)\\]/i", "<fieldset><legend> ".$lang_functions['text_quote'].": \\1 </legend><br />", $s);
+    $textQuote = nexus_trans("label.text_quote");
+	$s = preg_replace("/\\[quote\\]/i","<fieldset><legend> ".$textQuote." </legend><br />",$s);
+	$s = preg_replace("/\\[quote=(.+?)\\]/i", "<fieldset><legend> ".$textQuote.": \\1 </legend><br />", $s);
 	$s = preg_replace("/\\[\\/quote\\]/i","</fieldset><br />",$s);
 	return $s;
 }
 
 function print_attachment($dlkey, $enableimage = true, $imageresizer = true)
 {
-	global $Cache, $httpdirectory_attachment;
-	global $lang_functions;
+	$httpdirectory_attachment = get_setting('attachment.httpdirectory');
 	if (strlen($dlkey) == 32){
-	if (!$row = $Cache->get_value('attachment_'.$dlkey.'_content')){
+	if (!$row = \Nexus\Database\NexusDB::cache_get('attachment_'.$dlkey.'_content')){
 		$res = sql_query("SELECT * FROM attachments WHERE dlkey=".sqlesc($dlkey)." LIMIT 1") or sqlerr(__FILE__,__LINE__);
 		$row = mysql_fetch_array($res);
-		$Cache->cache_value('attachment_'.$dlkey.'_content', $row, 86400);
+        \Nexus\Database\NexusDB::cache_put('attachment_'.$dlkey.'_content', $row, 86400);
 	}
 	}
 	if (!$row)
 	{
-		return "<div style=\"text-decoration: line-through; font-size: 7pt\">".$lang_functions['text_attachment_key'].$dlkey.$lang_functions['text_not_found']."</div>";
+		return "<div style=\"text-decoration: line-through; font-size: 7pt\">".nexus_trans('attachment.text_key').$dlkey.nexus_trans('attachment.not_found')."</div>";
 	}
 	else{
 	$id = $row['id'];
 	if ($row['isimage'] == 1)
 	{
 		if ($enableimage){
-//			if ($row['thumb'] == 1){
-//				$url = $httpdirectory_attachment."/".$row['location'].".thumb.jpg";
-//                $url = $httpdirectory_attachment."/".$row['location'];
-//			}
-//			else{
-//				$url = $httpdirectory_attachment."/".$row['location'];
-//			}
-            $url = \Nexus\Attachment\Storage::getDriver($row['driver'])->getImageUrl($row['location']);
-            do_log(sprintf("driver: %s, location: %s, url: %s", $row['driver'], $row['location'], $url));
+            $driver = $row['driver'] ?? 'local';
+            if ($driver == "local") {
+                if ($row['thumb'] == 1){
+                    $url = $httpdirectory_attachment."/".$row['location'].".thumb.jpg";
+                } else {
+                    $url = $httpdirectory_attachment."/".$row['location'];
+                }
+            } else {
+                $url = \Nexus\Attachment\Storage::getDriver($driver)->getImageUrl($row['location']);
+            }
+            do_log(sprintf("driver: %s, location: %s, url: %s", $driver, $row['location'], $url));
 			if($imageresizer == true)
-				$onclick = " onclick=\"Previewurl('".$url."')\"";
+				$onclick = " data-zoomable data-zoom-src=\"".$url."\"";
 			else $onclick = "";
-			$return = "<img id=\"attach".$id."\" style=\"max-width: 700px\" alt=\"".htmlspecialchars($row['filename'])."\" src=\"".$url."\"". $onclick .  " onmouseover=\"domTT_activate(this, event, 'content', '".htmlspecialchars("<strong>".$lang_functions['text_size']."</strong>: ".mksize($row['filesize'])."<br />".gettime($row['added']))."', 'styleClass', 'attach', 'x', findPosition(this)[0], 'y', findPosition(this)[1]-58);\" />";
+			$return = "<img id=\"attach".$id."\" style=\"max-width: 700px\" alt=\"".htmlspecialchars($row['filename'])."\" src=\"".$url."\"". $onclick .  " onmouseover=\"domTT_activate(this, event, 'content', '".htmlspecialchars("<strong>".nexus_trans('attachment.size')."</strong>: ".mksize($row['filesize'])."<br />".gettime($row['added']))."', 'styleClass', 'attach', 'x', findPosition(this)[0], 'y', findPosition(this)[1]-58);\" />";
 		}
 		else $return = "";
 	}
@@ -202,7 +204,7 @@ function print_attachment($dlkey, $enableimage = true, $imageresizer = true)
 				$icon = "<img alt=\"other\" src=\"pic/attachicons/common.gif\" />";
 			}
 		}
-		$return = "<div class=\"attach\">".$icon."&nbsp;&nbsp;<a href=\"".htmlspecialchars("getattachment.php?id=".$id."&dlkey=".$dlkey)."\" target=\"_blank\" id=\"attach".$id."\" onmouseover=\"domTT_activate(this, event, 'content', '".htmlspecialchars("<strong>".$lang_functions['text_downloads']."</strong>: ".number_format($row['downloads'])."<br />".gettime($row['added']))."', 'styleClass', 'attach', 'x', findPosition(this)[0], 'y', findPosition(this)[1]-58);\">".htmlspecialchars($row['filename'])."</a>&nbsp;&nbsp;<font class=\"size\">(".mksize($row['filesize']).")</font></div>";
+		$return = "<div class=\"attach\">".$icon."&nbsp;&nbsp;<a href=\"".htmlspecialchars("getattachment.php?id=".$id."&dlkey=".$dlkey)."\" target=\"_blank\" id=\"attach".$id."\" onmouseover=\"domTT_activate(this, event, 'content', '".htmlspecialchars("<strong>".nexus_trans('attachment.downloads')."</strong>: ".number_format($row['downloads'])."<br />".gettime($row['added']))."', 'styleClass', 'attach', 'x', findPosition(this)[0], 'y', findPosition(this)[1]-58);\">".htmlspecialchars($row['filename'])."</a>&nbsp;&nbsp;<font class=\"size\">(".mksize($row['filesize']).")</font></div>";
 	}
 	return $return;
 	}
@@ -227,21 +229,26 @@ function formatUrl($url, $newWindow = false, $text = '', $linkClass = '') {
 	return addTempCode("<a".($linkClass ? " class=\"$linkClass\"" : '')." href=\"$url\"" . ($newWindow==true? " target=\"_blank\"" : "").">$text</a>");
 }
 function formatCode($text) {
-	global $lang_functions;
-	return addTempCode("<br /><div class=\"codetop\">".$lang_functions['text_code']."</div><div class=\"codemain\"><pre><code>$text</code></pre></div><br />");
+    $textCode = nexus_trans("label.text_code");
+	return addTempCode("<br /><div class=\"codetop\">".$textCode."</div><div class=\"codemain\"><pre><code>$text</code></pre></div><br />");
 }
 
 function formatImg($src, $enableImageResizer, $image_max_width, $image_max_height, $imgId = "") {
-    if (is_danger_url($src)) {
-        $msg = "[DANGER_URL]: $src";
-        do_log($msg, "alert");
-        write_log($msg, "mod");
+    $src = filter_src($src);
+    if (empty($src)) {
         return "";
     }
-	return addTempCode("<img style=\"max-width: 100%\" id=\"$imgId\" alt=\"image\" src=\"$src\"" .($enableImageResizer ?  " onload=\"Scale(this,$image_max_width,$image_max_height);\" onclick=\"Preview(this);\"" : "") .  " />");
+    return addTempCode("<img style=\"max-width: 100%\" id=\"$imgId\" alt=\"image\" src=\"$src\"" .
+        ($enableImageResizer ?
+            " onload=\"Scale(this, $image_max_width, $image_max_height);\" data-zoomable " : "") .
+        " onerror=\"handleImageError(this, '$src');\" />");
 }
 
 function formatFlash($src, $width, $height) {
+    $src = filter_src($src);
+    if (empty($src)) {
+        return "";
+    }
 	if (!$width) {
 		$width = 500;
 	}
@@ -251,6 +258,10 @@ function formatFlash($src, $width, $height) {
 	return addTempCode("<object width=\"$width\" height=\"$height\"><param name=\"movie\" value=\"$src\" /><embed src=\"$src\" width=\"$width\" height=\"$height\" type=\"application/x-shockwave-flash\"></embed></object>");
 }
 function formatFlv($src, $width, $height) {
+    $src = filter_src($src);
+    if (empty($src)) {
+        return "";
+    }
 	if (!$width) {
 		$width = 320;
 	}
@@ -261,6 +272,10 @@ function formatFlv($src, $width, $height) {
 }
 function formatYoutube($src, $width = '', $height = ''): string
 {
+    $src = filter_src($src);
+    if (empty($src)) {
+        return "";
+    }
     if (!$width) {
         $width = 560;
     }
@@ -280,6 +295,28 @@ function formatYoutube($src, $width = '', $height = ''): string
     ));
 }
 
+function formatVideo($src, $width, $height) {
+    $src = filter_src($src);
+    if (empty($src)) {
+        return "";
+    }
+    if (!$width) {
+        $width = 560;
+    }
+    if (!$height) {
+        $height = 315;
+    }
+    return addTempCode("<video controls width=\"$width\" height=\"$height\"><source src=\"$src\" /><a href=\"$src\">$src</a></video>");
+}
+
+function formatAudio($src) {
+    $src = filter_src($src);
+    if (empty($src)) {
+        return "";
+    }
+    return addTempCode("<audio controls><source src=\"$src\" /><a href=\"$src\">$src</a></audio>");
+}
+
 function formatSpoiler($content, $title = '', $defaultCollapsed = true): string
 {
     global $lang_functions;
@@ -287,15 +324,20 @@ function formatSpoiler($content, $title = '', $defaultCollapsed = true): string
         $title = $lang_functions['spoiler_default_title'];
     }
 //    $content = str_replace(['<br>', '<br />'], '', $content);
-    $contentClass = "spoiler-content";
-    if ($defaultCollapsed) {
-        $contentClass .= " collapse";
+    $contentClass = "";
+    if (!$defaultCollapsed) {
+        $contentClass .= " open";
     }
     $HTML = sprintf(
-        '<div><div class="spoiler-title-box"><div class="spoiler-title" title="%s">%s</div></div><div class="%s">%s</div></div>',
-        $lang_functions['spoiler_expand_collapse'], $title, $contentClass, $content
+        '<details%s><summary>%s</summary>%s</details>',
+        $contentClass, $title, $content
     );
     return addTempCode($HTML);
+}
+
+function formatHidden($content): string
+{
+    return addTempCode(sprintf('<span class="hidden-text">%s</span>', $content));
 }
 
 function formatTextAlign($text, $align): string
@@ -343,12 +385,12 @@ function format_comment($text, $strip_html = true, $xssclean = false, $newtab = 
     // Linebreaks
     $s = nl2br($s);
 
-	$originalBbTagArray = array('[siteurl]', '[site]','[*]', '[b]', '[/b]', '[i]', '[/i]', '[u]', '[/u]', '[pre]', '[/pre]', '[/color]', '[/font]', '[/size]', "  ");
-	$replaceXhtmlTagArray = array(get_protocol_prefix().get_setting('basic.BASEURL'), get_setting('basic.SITENAME'), '<img class="listicon listitem" src="pic/trans.gif" alt="list" />', '<b>', '</b>', '<i>', '</i>', '<u>', '</u>', '<pre>', '</pre>', '</span>', '</font>', '</font>', ' &nbsp;');
+	$originalBbTagArray = array('[siteurl]', '[site]','[*]', '[b]', '[/b]', '[i]', '[/i]', '[u]', '[/u]', '[s]', '[/s]', '[pre]', '[/pre]', '[/color]', '[/font]', '[/size]', '[hr]', "  ");
+	$replaceXhtmlTagArray = array(get_protocol_prefix().get_setting('basic.BASEURL'), get_setting('basic.SITENAME'), '&#x2022; ', '<b>', '</b>', '<i>', '</i>', '<u>', '</u>', '<s>', '</s>', '<pre>', '</pre>', '</span>', '</font>', '</font>', '<hr>', ' &nbsp;');
 	$s = str_replace($originalBbTagArray, $replaceXhtmlTagArray, $s);
 
 	$originalBbTagArray = array("/\[font=([^\[\(&\\;]+?)\]/is", "/\[color=([#0-9a-z]{1,15})\]/is", "/\[color=([a-z]+)\]/is", "/\[size=([1-7])\]/is");
-	$replaceXhtmlTagArray = array("<font face=\"\\1\">", "<span style=\"color: \\1;\">", "<span style=\"color: \\1;\">", "<font size=\"\\1\">");
+	$replaceXhtmlTagArray = array("<font face=\"\\1\">", "<span style=\"color: \\1;word-break: break-word\">", "<span style=\"color: \\1;word-break: break-word\">", "<font size=\"\\1\">");
 	$s = preg_replace($originalBbTagArray, $replaceXhtmlTagArray, $s);
 
 
@@ -367,33 +409,22 @@ function format_comment($text, $strip_html = true, $xssclean = false, $newtab = 
 		$s = preg_replace("/\[img=([^\<\r\n\"']+?)\]/i", '', $s, -1);
 	}
 
-	// [flash,500,400]http://www/image.swf[/flash]
-	if (strpos($s,"[flash") !== false) { //flash is not often used. Better check if it exist before hand
-		if ($enableflash) {
-//			$s = preg_replace("/\[flash(\,([1-9][0-9]*)\,([1-9][0-9]*))?\]((http|ftp):\/\/[^\s'\"<>]+(\.(swf)))\[\/flash\]/ei", "formatFlash('\\4', '\\2', '\\3')", $s);
-			$s = preg_replace_callback("/\[flash(\,([1-9][0-9]*)\,([1-9][0-9]*))?\]((http|ftp):\/\/[^\s'\"<>]+(\.(swf)))\[\/flash\]/i", function ($matches) {
-			    return formatFlash($matches[4], $matches[2], $matches[3]);
-            }, $s);
-		} else {
-			$s = preg_replace("/\[flash(\,([1-9][0-9]*)\,([1-9][0-9]*))?\]((http|ftp):\/\/[^\s'\"<>]+(\.(swf)))\[\/flash\]/i", '', $s);
-		}
-	}
-	//[flv,320,240]http://www/a.flv[/flv]
-	if (strpos($s,"[flv") !== false) { //flv is not often used. Better check if it exist before hand
-		if ($enableflash) {
-//			$s = preg_replace("/\[flv(\,([1-9][0-9]*)\,([1-9][0-9]*))?\]((http|ftp):\/\/[^\s'\"<>]+(\.(flv)))\[\/flv\]/ei", "formatFlv('\\4', '\\2', '\\3')", $s);
-			$s = preg_replace_callback("/\[flv(\,([1-9][0-9]*)\,([1-9][0-9]*))?\]((http|ftp):\/\/[^\s'\"<>]+(\.(flv)))\[\/flv\]/i", function ($matches) {
-			    return formatFlv($matches[4], $matches[2], $matches[3]);
-            }, $s);
-		} else {
-			$s = preg_replace("/\[flv(\,([1-9][0-9]*)\,([1-9][0-9]*))?\]((http|ftp):\/\/[^\s'\"<>]+(\.(flv)))\[\/flv\]/i", '', $s);
-		}
-	}
     //[youtube,560,315]https://www.youtube.com/watch?v=DWDL3VTCcCg&ab_channel=ESPNMMA[/youtube]
 	if (str_contains($s, '[youtube') && str_contains($s, 'v=')) {
         $s = preg_replace_callback("/\[youtube(\,([1-9][0-9]*)\,([1-9][0-9]*))?\]((http|https):\/\/[^\s'\"<>]+)\[\/youtube\]/i", function ($matches) {
             return formatYoutube($matches[4], $matches[2], $matches[3]);
         }, $s);
+    }
+    if (str_contains($s, "[video")) {
+        $s = preg_replace_callback("/\[video(\,([1-9][0-9]*)\,([1-9][0-9]*))?\]((http|https):\/\/[^\s'\"<>]+)\[\/video\]/i", function ($matches) {
+            return formatVideo($matches[4], $matches[2], $matches[3]);
+        }, $s);
+    }
+    if (str_contains($s, "[audio")) {
+        $s = preg_replace_callback("/\[audio\]((http|https):\/\/[^\s'\"<>]+)\[\/audio\]/i", function ($matches) {
+            return formatAudio($matches[1]);
+        }, $s);
+
     }
 
 	// [url=http://www.example.com]Text[/url]
@@ -428,6 +459,11 @@ function format_comment($text, $strip_html = true, $xssclean = false, $newtab = 
     // [right]Right text[/right]
     $s = preg_replace_callback("/\[right\](.*)\[\/right\]/isU", function ($matches) {
         return formatTextAlign($matches[1], 'right');
+    }, $s);
+
+    // [hide]Hidden text[/hide]
+    $s = preg_replace_callback("/\[hide\](.*)\[\/hide\]/isU", function ($matches) {
+        return formatHidden($matches[1]);
     }, $s);
 
 
@@ -722,10 +758,12 @@ function get_slr_color($ratio)
 
 function write_log($text, $security = "normal")
 {
-	$text = sqlesc($text);
-	$added = sqlesc(date("Y-m-d H:i:s"));
-	$security = sqlesc($security);
-	sql_query("INSERT INTO sitelog (added, txt, security_level) VALUES($added, $text, $security)") or sqlerr(__FILE__, __LINE__);
+    \App\Models\SiteLog::query()->insert([
+        'added' => now(),
+        'txt' => $text,
+        'security_level' => $security,
+        'uid' => get_user_id(),
+    ]);
 }
 
 
@@ -1239,9 +1277,9 @@ function parse_imdb_id($url)
         $url = str_pad($url, 7, '0', STR_PAD_LEFT);
     }
 	if ($url != "" && preg_match("/[0-9]+/i", $url, $matches)) {
-		return $matches[0];
+		return intval($matches[0]);
 	}
-	return '';
+	return null;
 }
 
 function build_imdb_url($imdb_id)
@@ -1712,7 +1750,7 @@ function registration_check($type = "invitesystem", $maxuserscheck = true, $ipch
 		$ip = getip () ;
 		$a = (@mysql_fetch_row(@sql_query("select count(*) from users where ip='" . mysql_real_escape_string($ip) . "'"))) or sqlerr(__FILE__, __LINE__);
 		if ($a[0] > $maxip)
-		stderr($lang_functions['std_sorry'], $lang_functions['std_the_ip']."<b>" . htmlspecialchars($ip) ."</b>". $lang_functions['std_used_many_times'],false, true);
+		stderr($lang_functions['std_sorry'], $lang_functions['std_the_ip']."<b>" . htmlspecialchars($ip) ."</b>". sprintf($lang_functions['std_used_many_times'], \App\Models\Setting::getSiteName()),false, true);
 	}
 	return true;
 }
@@ -1728,56 +1766,109 @@ function random_str($length="6")
 	}
 	return $str;
 }
-function image_code () {
-	$randomstr = random_str();
-	$imagehash = md5($randomstr);
-	$dateline = time();
-	$sql = 'INSERT INTO `regimages` (`imagehash`, `imagestring`, `dateline`) VALUES (\''.$imagehash.'\', \''.$randomstr.'\', \''.$dateline.'\');';
-	sql_query($sql);
-	return $imagehash;
+function captcha_manager(): \App\Services\Captcha\CaptchaManager
+{
+    static $manager;
+
+    if (!$manager) {
+        $manager = new \App\Services\Captcha\CaptchaManager();
+    }
+
+    return $manager;
 }
 
-function check_code ($imagehash, $imagestring, $where = 'signup.php',$maxattemptlog=false,$head=true) {
-	global $lang_functions;
+function image_code () {
+    $driver = captcha_manager()->driver('image');
+
+    if (!method_exists($driver, 'issue')) {
+        throw new \RuntimeException('Image captcha driver is unavailable.');
+    }
+
+    return $driver->issue();
+}
+
+function check_code ($imagehash, $imagestring, $where = 'signup.php', $maxattemptlog = false, $head = true) {
+    global $lang_functions;
     global $iv;
+
     if ($iv !== 'yes') {
         return true;
     }
-	$query = sprintf("SELECT * FROM regimages WHERE imagehash='%s' AND imagestring='%s'",
-        mysql_real_escape_string((string)$imagehash),
-        mysql_real_escape_string((string)$imagestring)
-    );
-	$sql = sql_query($query);
-	$imgcheck = mysql_fetch_array($sql);
-	if(!$imgcheck['dateline']) {
-		$delete = sprintf("DELETE FROM regimages WHERE imagehash='%s'",
-		    mysql_real_escape_string((string)$imagehash)
-        );
-		sql_query($delete);
-		if (!$maxattemptlog)
-		stderr('Error',$lang_functions['std_invalid_image_code']."<a href=\"".htmlspecialchars($where)."\">".$lang_functions['std_here_to_request_new'], false);
-		else
-		failedlogins($lang_functions['std_invalid_image_code']."<a href=\"".htmlspecialchars($where)."\">".$lang_functions['std_here_to_request_new'],true,$head);
-	}else{
-		$delete = sprintf("DELETE FROM regimages WHERE imagehash='%s'",
-		    mysql_real_escape_string((string)$imagehash)
-        );
-		sql_query($delete);
-		return true;
-	}
+
+    $manager = captcha_manager();
+
+    if (!$manager->isEnabled()) {
+        return true;
+    }
+
+    $payload = [
+        'imagehash' => $imagehash,
+        'imagestring' => $imagestring,
+        'request' => array_merge($_POST ?? [], $_GET ?? []),
+    ];
+
+    $context = [
+        'where' => $where,
+        'maxattemptlog' => $maxattemptlog,
+        'head' => $head,
+        'ip' => getip(),
+    ];
+
+    try {
+        if ($manager->verify($payload, $context)) {
+            return true;
+        }
+    } catch (\App\Services\Captcha\Exceptions\CaptchaValidationException $exception) {
+        $message = $exception->getMessage();
+
+        $defaultMessage = $lang_functions['std_invalid_image_code'] . "<a href=\"" . htmlspecialchars($where) . "\">" . $lang_functions['std_here_to_request_new'];
+
+        if ($message === '' || $message === 'Invalid captcha response.' || $message === 'Missing captcha parameters.') {
+            $message = $defaultMessage;
+        }
+
+        if (!$maxattemptlog) {
+            stderr('Error', $message, false);
+        } else {
+            failedlogins($message, true, $head);
+        }
+    }
+
+    return false;
 }
+
 function show_image_code () {
-	global $lang_functions;
-	global $iv;
-	if ($iv == "yes") {
-		unset($imagehash);
-		$imagehash = image_code () ;
-		print ("<tr><td class=\"rowhead\">".$lang_functions['row_security_image']."</td>");
-		print ("<td align=\"left\"><img src=\"".htmlspecialchars("image.php?action=regimage&imagehash=".$imagehash."&secret=".($_GET['secret'] ?? ''))."\" border=\"0\" alt=\"CAPTCHA\" /></td></tr>");
-		print ("<tr><td class=\"rowhead\">".$lang_functions['row_security_code']."</td><td align=\"left\">");
-		print("<input type=\"text\" autocomplete=\"off\" style=\"width: 180px; border: 1px solid gray\" name=\"imagestring\" value=\"\" />");
-		print("<input type=\"hidden\" name=\"imagehash\" value=\"$imagehash\" /></td></tr>");
-	}
+    global $lang_functions;
+    global $iv;
+
+    if ($iv !== 'yes') {
+        return;
+    }
+
+    $manager = captcha_manager();
+    $driver = $manager->driver();
+
+    if (!$driver->isEnabled()) {
+        return;
+    }
+
+    $labelKey = $driver instanceof \App\Services\Captcha\Drivers\ImageCaptchaDriver
+        ? 'row_security_image'
+        : 'row_security_challenge';
+
+    $labels = [
+        'image' => $lang_functions[$labelKey] ?? $lang_functions['row_security_image'],
+        'code' => $lang_functions['row_security_code'],
+    ];
+
+    $markup = $driver->render([
+        'labels' => $labels,
+        'secret' => $_GET['secret'] ?? '',
+    ]);
+
+    if ($markup !== '') {
+        echo $markup;
+    }
 }
 
 function get_ip_location($ip)
@@ -1968,8 +2059,8 @@ function userlogin() {
 	$nip = ip2long($ip);
 	if ($nip) //$nip would be false for IPv6 address
 	{
-		$res = sql_query("SELECT * FROM bans WHERE $nip >= first AND $nip <= last") or sqlerr(__FILE__, __LINE__);
-		if (mysql_num_rows($res) > 0)
+		$res = sql_query("SELECT * FROM bans WHERE first <= $nip AND last >= $nip") or sqlerr(__FILE__, __LINE__);
+        if (mysql_num_rows($res) > 0)
 		{
 			header("HTTP/1.1 403 Forbidden");
 			print("<html><head><meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\"></head><body>".$lang_functions['text_unauthorized_ip']."</body></html>\n");
@@ -1981,7 +2072,6 @@ function userlogin() {
     if (empty($row)) {
         return $loginResult = false;
     }
-
 	if (!$row["passkey"]){
 		$passkey = md5($row['username'].date("Y-m-d H:i:s").$row['passhash']);
 		sql_query("UPDATE users SET passkey = ".sqlesc($passkey)." WHERE id=" . sqlesc($row["id"]));
@@ -1989,6 +2079,7 @@ function userlogin() {
 
 	$oldip = $row['ip'];
 	$row['ip'] = $ip;
+    $row['seedbonus'] = floatval($row['seedbonus']);
 	$GLOBALS["CURUSER"] = $row;
 	if (isset($_GET['clearcache']) && $_GET['clearcache'] && get_user_class() >= UC_MODERATOR) {
 	    $Cache->setClearCache(1);
@@ -2001,7 +2092,6 @@ function userlogin() {
 //		error_reporting(E_ALL & ~E_NOTICE);
 //		error_reporting(-1);
 //	}
-
     return $loginResult = true;
 }
 
@@ -2120,6 +2210,7 @@ function mkprettytime($s) {
 	if ($s < 0)
 	$s = 0;
 	$t = array();
+    $s = round($s);
 	foreach (array("60:sec","60:min","24:hour","0:day") as $x) {
 		$y = explode(":", $x);
 		if ($y[0] > 1) {
@@ -2202,7 +2293,7 @@ function validfilename($name) {
 }
 
 function validemail($email) {
-	return preg_match('/^[\w.-]+@([\w.-]+\.)+[a-z]{2,6}$/is', $email);
+    return filter_var($email, FILTER_VALIDATE_EMAIL) !== false;
 }
 
 function validlang($langid) {
@@ -2219,9 +2310,8 @@ function validlang($langid) {
 
 function get_if_restricted_is_open()
 {
-	global $sptime;
 	// it's sunday
-	if($sptime == 'yes' && (date("w",time()) == '0' || (date("w",time()) == 6) && (date("G",time()) >=12 && date("G",time()) <=23)))
+	if(\App\Models\Setting::getIsUploadOpenAtWeekend() && (date("w",time()) == '0' || (date("w",time()) == 6) && (date("G",time()) >=12 && date("G",time()) <=23)))
 	{
 		return true;
 	}
@@ -2236,7 +2326,7 @@ function menu ($selected = "home") {
 	global $USERUPDATESET;
 	//no this option in config.php
     $enablerequest = 'yes';
-	$script_name = $_SERVER["SCRIPT_FILENAME"];
+	$script_name = $_SERVER["SCRIPT_NAME"];
 	if (preg_match("/index/i", $script_name)) {
 		$selected = "home";
 	}elseif (preg_match("/forums/i", $script_name)) {
@@ -2325,7 +2415,7 @@ function get_css_row() {
 		}
 		$Cache->cache_value('stylesheet_content', $rows, 95400);
 	}
-	return $rows[$cssid];
+	return $rows[$cssid] ?? $rows[$defcss];
 }
 function get_css_uri($file = "")
 {
@@ -2413,10 +2503,12 @@ function stdhead($title = "", $msgalert = true, $script = "", $place = "")
 	$tstart = getmicrotime(); // Start time
 	//Insert old ip into iplog
 	if ($CURUSER){
-		if ($iplog1 == "yes") {
-			if (($oldip != $CURUSER["ip"]) && $CURUSER["ip"])
-			sql_query("INSERT INTO iplog (ip, userid, access) VALUES (" . sqlesc($CURUSER['ip']) . ", " . $CURUSER['id'] . ", '" . $CURUSER['last_access'] . "')");
-		}
+//		if ($iplog1 == "yes") {
+//			if (($oldip != $CURUSER["ip"]) && $CURUSER["ip"])
+//			sql_query("INSERT INTO iplog (ip, userid, access) VALUES (" . sqlesc($CURUSER['ip']) . ", " . $CURUSER['id'] . ", '" . $CURUSER['last_access'] . "')");
+//		}
+        //record always
+        \App\Repositories\IpLogRepository::saveToCache($CURUSER['id']);
 		$USERUPDATESET[] = "last_access = ".sqlesc(date("Y-m-d H:i:s"));
 		$USERUPDATESET[] = "ip = ".sqlesc($CURUSER['ip']);
 	}
@@ -2469,7 +2561,6 @@ $cssupdatedate=($cssupdatedate ? "?".htmlspecialchars($cssupdatedate) : "");
 <link rel="stylesheet" href="<?php echo get_forum_pic_folder()."/forumsprites.css".$cssupdatedate?>" type="text/css" />
 <link rel="stylesheet" href="<?php echo $css_uri."theme.css".$cssupdatedate?>" type="text/css" />
 <link rel="stylesheet" href="<?php echo $css_uri."DomTT.css".$cssupdatedate?>" type="text/css" />
-<link rel="stylesheet" href="styles/curtain_imageresizer.css<?php echo $cssupdatedate?>" type="text/css" />
 <link rel="stylesheet" href="styles/nexus.css<?php echo $cssupdatedate?>" type="text/css" />
 <?php
 if ($CURUSER){
@@ -2501,7 +2592,13 @@ foreach (\Nexus\Nexus::getAppendHeaders() as $value) {
 }
 ?>
 <script type="text/javascript" src="js/jquery-1.12.4.min.js<?php echo $cssupdatedate?>"></script>
-<script type="text/javascript">jQuery.noConflict();</script>
+<script type="text/javascript">
+    jQuery.noConflict();
+    window.nexusLayerOptions = {
+        confirm: {btnAlign: 'c', title: 'Confirm', btn: ['OK', 'Cancel']},
+        alert: {btnAlign: 'c', title: 'Info', btn: ['OK', 'Cancel']}
+    }
+</script>
 <script type="text/javascript" src="vendor/layer-v3.5.1/layer/layer.js<?php echo $cssupdatedate?>"></script>
 </head>
 <body>
@@ -2702,15 +2799,34 @@ print '<br/>';
 	}
 if ($msgalert)
 {
-    $spStateGlobal = get_global_sp_state();
-    if ($spStateGlobal != \App\Models\Torrent::PROMOTION_NORMAL) {
-        $torrentGlobalStateRow = \Nexus\Database\NexusDB::cache_get(\App\Models\Setting::TORRENT_GLOBAL_STATE_CACHE_KEY);
-        $msg = sprintf($lang_functions['full_site_promotion_in_effect'], \App\Models\Torrent::$promotionTypes[$spStateGlobal]['text']);
-        if (!empty($torrentGlobalStateRow['begin']) || !empty($torrentGlobalStateRow['deadline'])) {
-            $timeRange = sprintf($lang_functions['full_site_promotion_time_range'], $torrentGlobalStateRow['begin'] ?? '-∞', $torrentGlobalStateRow['deadline'] ?? '∞');
-            $msg .= $timeRange;
+    $timeline = \App\Models\TorrentState::resolveTimeline();
+    $currentPromotion = $timeline['current'] ?? null;
+    $upcomingPromotion = $timeline['upcoming'] ?? null;
+    $remarkTpl = $lang_functions['full_site_promotion_remark'] ?? 'Remark: %s';
+
+    if ($currentPromotion) {
+        $promotionText = \App\Models\Torrent::$promotionTypes[$currentPromotion['global_sp_state']]['text'] ?? '';
+        $msg = sprintf($lang_functions['full_site_promotion_in_effect'], $promotionText);
+        if (!empty($currentPromotion['begin']) || !empty($currentPromotion['deadline'])) {
+            $timeRange = sprintf($lang_functions['full_site_promotion_time_range'], $currentPromotion['begin'] ?? '-∞', $currentPromotion['deadline'] ?? '∞');
+            $msg .= '<br/>' . $timeRange;
+        }
+        if (!empty($currentPromotion['remark'])) {
+            $msg .= '<br/>' . sprintf($remarkTpl, $currentPromotion['remark']);
         }
         msgalert("torrents.php", $msg, "green");
+    }
+    if ($upcomingPromotion) {
+        $promotionText = \App\Models\Torrent::$promotionTypes[$upcomingPromotion['global_sp_state']]['text'] ?? '';
+        $msg = sprintf($lang_functions['full_site_promotion_upcoming'] ?? 'Upcoming full site [%s]', $promotionText);
+        if (!empty($upcomingPromotion['begin']) || !empty($upcomingPromotion['deadline'])) {
+            $timeRange = sprintf($lang_functions['full_site_promotion_time_range'], $upcomingPromotion['begin'] ?? '-∞', $upcomingPromotion['deadline'] ?? '∞');
+            $msg .= '<br/>' . $timeRange;
+        }
+        if (!empty($upcomingPromotion['remark'])) {
+            $msg .= '<br/>' . sprintf($remarkTpl, $upcomingPromotion['remark']);
+        }
+        msgalert("torrents.php", $msg, "blue");
     }
 	if($CURUSER['leechwarn'] == 'yes')
 	{
@@ -2798,13 +2914,13 @@ if ($msgalert)
             $Cache->cache_value($cacheKey, $toApprovalCounts, 60);
         }
         if ($toApprovalCounts) {
-            msgalert('torrents.php?approval_status=0', sprintf($lang_functions['text_torrent_to_approval'], is_or_are($toApprovalCounts), $toApprovalCounts, add_s($toApprovalCounts)), 'darkred');
+            msgalert('torrents.php?approval_status=0&incldead=0', sprintf($lang_functions['text_torrent_to_approval'], is_or_are($toApprovalCounts), $toApprovalCounts, add_s($toApprovalCounts)), 'darkred');
         }
     }
 
     //seed box approval
     if (get_user_class() >= \App\Models\User::CLASS_ADMINISTRATOR && get_setting('seed_box.enabled') == 'yes') {
-        $cacheKey = 'SEED_BOX_RECORD_APPROVAL_NONE';
+        $cacheKey = \App\Repositories\SeedBoxRepository::APPROVAL_COUNT_CACHE_KEY;
         $toApprovalCounts = $Cache->get_value($cacheKey);
         if ($toApprovalCounts === false) {
             $toApprovalCounts = get_row_count('seed_box_records', 'where status = 0');
@@ -2875,8 +2991,10 @@ function stdfoot() {
 			echo "<div align=\"center\" style=\"margin-top: 10px\" id=\"\">".$footerad[0]."</div>";
 	}
 	print("<div style=\"margin-top: 10px; margin-bottom: 30px;\" align=\"center\">");
-	if ($CURUSER && count($USERUPDATESET)){
-		sql_query("UPDATE users SET " . join(",", $USERUPDATESET) . " WHERE id = ".$CURUSER['id']);
+	if ($CURUSER) {
+        if (count($USERUPDATESET)) {
+            sql_query("UPDATE users SET " . join(",", $USERUPDATESET) . " WHERE id = ".$CURUSER['id']);
+        }
 	}
 	// Variables for End Time
 	$tend = microtime(true);
@@ -2885,13 +3003,24 @@ function stdfoot() {
 	$yearfounded = ($year ? $year : 2007);
 	print(" (c) "." <a href=\"" . get_protocol_prefix() . $BASEURL."\" target=\"_self\">".$SITENAME."</a> ".($icplicense_main ? " ".$icplicense_main." " : "").(date("Y") != $yearfounded ? $yearfounded."-" : "").date("Y")." ".VERSION."<br /><br />");
 	printf ("[page created in <b> %s </b> sec", sprintf("%.3f", $totaltime));
-    print (" with <b>".count($query_name)."</b> db queries, <b>".$Cache->getCacheReadTimes()."</b> reads and <b>".$Cache->getCacheWriteTimes()."</b> writes of Redis and <b>".mksize(memory_get_usage())."</b> ram]");
+    $debugQuery = $enablesqldebug_tweak == 'yes' && get_user_class() >= $sqldebug_tweak;
+    if ($debugQuery) {
+        $query_name_laravel = last_query(true);
+        $dbQueryCount = count($query_name) + count($query_name_laravel);
+    } else {
+        $query_name_laravel = [];
+        $dbQueryCount = count($query_name) + last_query('COUNT');
+    }
+    print (" with <b>".$dbQueryCount."</b> db queries, <b>".$Cache->getCacheReadTimes()."</b> reads and <b>".$Cache->getCacheWriteTimes()."</b> writes of Redis and <b>".mksize(memory_get_usage())."</b> ram]");
 	print ("</div>\n");
-	if ($enablesqldebug_tweak == 'yes' && get_user_class() >= $sqldebug_tweak) {
+	if ($debugQuery) {
 		print("<div id=\"sql_debug\" style='text-align: left;'>SQL query list: <ul>");
 		foreach($query_name as $query) {
 			print(sprintf('<li>%s [%s]</li>', htmlspecialchars($query['query']), $query['time']));
 		}
+        foreach($query_name_laravel as $query) {
+            print(sprintf('<li>%s [%s ms]</li>', htmlspecialchars($query['raw_query']), $query['time']));
+        }
 		print("</ul>");
 		print("Redis key read: <ul>");
 		foreach($Cache->getKeyHits('read') as $keyName => $hits) {
@@ -2905,7 +3034,6 @@ function stdfoot() {
 		print("</ul>");
 		print("</div>");
 	}
-	print ("<div style=\"display: none;\" id=\"lightbox\" class=\"lightbox\"></div><div style=\"display: none;\" id=\"curtain\" class=\"curtain\"></div>");
 	if ($add_key_shortcut != "")
 	print($add_key_shortcut);
 	print("</div>");
@@ -2918,10 +3046,12 @@ function stdfoot() {
     }
 	$js = <<<JS
 <script type="application/javascript" src="js/nexus.js"></script>
+<script type="application/javascript" src="js/medium-zoom.min.js"></script>
 <script type="application/javascript" src="vendor/jquery-goup-1.1.3/jquery.goup.min.js"></script>
 <script>
 jQuery(document).ready(function(){
     jQuery.goup()
+    mediumZoom('[data-zoomable]')
 });
 </script>
 JS;
@@ -2958,7 +3088,7 @@ function httperr($code = 404) {
 function logincookie($id, $authKey, $duration = 0)
 {
     if (empty($authKey)) {
-        throw new \RuntimeException("user secret or auth_key is empty");
+        throw new \RuntimeException("auth_key is empty");
     }
     if ($duration <= 0) {
         $duration = get_setting('system.cookie_valid_days', 365) * 86400;
@@ -2971,8 +3101,15 @@ function logincookie($id, $authKey, $duration = 0)
     $tokenJson = json_encode($tokenData);
     $signature = hash_hmac('sha256', $tokenJson, $authKey);
     $authToken = base64_encode($tokenJson . '.' . $signature);
-	setcookie("c_secure_pass", $authToken, $expires, "/", "", true, true);
-	sql_query("UPDATE users SET last_login = NOW(), lang=" . sqlesc(get_langid_from_langcookie()) . " WHERE id = ".sqlesc($id));
+	setcookie("c_secure_pass", $authToken, $expires, "/", "", isHttps(), true);
+    $update = [
+        'last_login' => now(),
+    ];
+    $langId = get_langid_from_langcookie();
+    if ($langId > 0) {
+        $update['lang'] = $langId;
+    }
+	\App\Models\User::query()->where("id", $id)->update($update);
 }
 
 function set_langfolder_cookie($folder, $expires = 0x7fffffff)
@@ -2985,32 +3122,21 @@ function set_langfolder_cookie($folder, $expires = 0x7fffffff)
 
 function get_protocol_prefix()
 {
-	global $securelogin;
 	if (isHttps()) {
         return "https://";
     }
-	if ($securelogin == "yes") {
-		return "https://";
-	} elseif ($securelogin == "no") {
-		return "http://";
-	} else {
-		if (!isset($_COOKIE["c_secure_ssl"])) {
-			return "http://";
-		} else {
-			return base64_decode($_COOKIE["c_secure_ssl"]) == "yeah" ? "https://" : "http://";
-		}
-	}
+	return 'http://';
 }
 
 function get_langid_from_langcookie($lang = '')
 {
     if (empty($lang)) {
-        global $CURLANGDIR;
-        $lang = $CURLANGDIR;
+        $lang = get_langfolder_cookie();
     }
-
-	$row = mysql_fetch_array(sql_query("SELECT id FROM language WHERE site_lang = 1 AND site_lang_folder = " . sqlesc($lang) . "ORDER BY id ASC")) or sqlerr(__FILE__, __LINE__);
-	return $row['id'];
+    $row = \App\Models\Language::query()->where('site_lang', 1)->where("site_lang_folder", $lang)->orderBy("id")->first();
+    return $row->id ?? 0;
+//	$row = mysql_fetch_array(sql_query("SELECT id FROM language WHERE site_lang = 1 AND site_lang_folder = " . sqlesc($lang) . "ORDER BY id ASC")) or sqlerr(__FILE__, __LINE__);
+//	return $row['id'];
 }
 
 function make_folder($pre, $folder_name)
@@ -3025,7 +3151,7 @@ function make_folder($pre, $folder_name)
 
 function logoutcookie() {
 //	setcookie("c_secure_uid", "", 0x7fffffff, "/", "", false, true);
-	setcookie("c_secure_pass", "", 0x7fffffff, "/", "", true, true);
+	setcookie("c_secure_pass", "", 0x7fffffff, "/", "", isHttps(), true);
 // setcookie("c_secure_ssl", "", 0x7fffffff, "/", "", false, true);
 //	setcookie("c_secure_tracker_ssl", "", 0x7fffffff, "/", "", false, true);
 //	setcookie("c_secure_login", "", 0x7fffffff, "/", "", false, true);
@@ -3041,8 +3167,9 @@ function base64 ($string, $encode=true) {
 
 function loggedinorreturn($mainpage = false) {
 	global $CURUSER,$BASEURL;
+    $script = nexus()->getScript();
 	if (!$CURUSER) {
-	    if (nexus()->getScript() == 'ajax') {
+	    if ($script == 'ajax') {
 	        exit(fail('Not login!', $_POST));
         }
 		if ($mainpage) {
@@ -3054,7 +3181,9 @@ function loggedinorreturn($mainpage = false) {
 		}
 		exit();
 	}
-//	do_log("[USER]: " . $CURUSER['id']);
+    if ($CURUSER['enabled'] != 'yes' && $script != 'self-enable') {
+        nexus_redirect('self-enable.php');
+    }
 }
 
 function deletetorrent($id, $notify = false) {
@@ -3068,6 +3197,7 @@ function deletetorrent($id, $notify = false) {
 	$idStr = implode(', ', $idArr ?: [0]);
 	$torrent_dir = get_setting('main.torrent_dir');
     \Nexus\Database\NexusDB::statement("DELETE FROM torrents WHERE id in ($idStr)");
+    \Nexus\Database\NexusDB::statement("DELETE FROM torrent_extras WHERE torrent_id in ($idStr)");
     //delete by torrent, make sure user is deleted
     \Nexus\Database\NexusDB::statement("DELETE FROM snatched WHERE torrentid in ($idStr) and not exists (select 1 from users where id = snatched.userid)");
 	foreach(array("peers", "files", "comments") as $x) {
@@ -3087,13 +3217,11 @@ function deletetorrent($id, $notify = false) {
             'action_type' => \App\Models\TorrentOperationLog::ACTION_TYPE_DELETE,
             'comment' => '',
         ], $notify);
+        do_action("torrent_delete", $_id);
+        fire_event("torrent_deleted", $torrentInfo->get($_id));
     }
     $meiliSearchRep = new \App\Repositories\MeiliSearchRepository();
     $meiliSearchRep->deleteDocuments($idArr);
-    if (is_int($id)) {
-        do_action("torrent_delete", $id);
-        fire_event("torrent_deleted", $torrentInfo->get($id));
-    }
 }
 
 function pager($rpp, $count, $href, $opts = array(), $pagename = "page") {
@@ -3175,7 +3303,7 @@ function pager($rpp, $count, $href, $opts = array(), $pagename = "page") {
 
 	$start = $page * $rpp;
 	$add_key_shortcut = key_shortcut($page,$pages-1);
-	return array($pagertop, $pagerbottom, "LIMIT $start,$rpp", $start, $rpp, $page);
+	return array($pagertop, $pagerbottom, "limit $rpp offset $start", $start, $rpp, $page);
 }
 
 function commenttable($rows, $type, $parent_id, $review = false)
@@ -3370,6 +3498,7 @@ function torrenttable($rows, $variant = "torrent", $searchBoxId = 0) {
     $enablePtGen = get_setting('main.enable_pt_gen_systemyes') == 'yes';
 
 	$torrentSeedingLeechingStatus = $torrent->listLeechingSeedingStatus($CURUSER['id'], $torrentIdArr);
+    $ptGenInfo = TorrentExtra::query()->whereIn('torrent_id', $torrentIdArr)->pluck('pt_gen', 'torrent_id')->toArray();
     $tagRep = new \App\Repositories\TagRepository();
 	$torrentTagCollection = \App\Models\TorrentTag::query()->whereIn('torrent_id', $torrentIdArr)->get();
 	$torrentTagResult = $torrentTagCollection->groupBy('torrent_id');
@@ -3576,18 +3705,16 @@ foreach ($rows as $row)
 
 	//cover
     $coverSrc = $tdCover = '';
+
     if ($showCover) {
-        if ($imdb_id = parse_imdb_id($row["url"])) {
-            try {
-                if ($imdb->getCacheStatus($imdb_id) == 1) {
-                    $coverSrc = $imdb->getMovie($imdb_id)->photo(false);
-                }
-            } catch (\Exception $exception) {
-                do_log("torrent: {$row['id']} get cover from imdb error: ".$exception->getMessage() . "\n[stacktrace]\n" . $exception->getTraceAsString(), 'error');
-            }
-        }
-        if (empty($coverSrc) && !empty($row['cover'])) {
+        if (!empty($row['cover'])) {
             $coverSrc = $row['cover'];
+        }
+        if (empty($coverSrc) && !empty($row['url'])) {
+            $imdb_id = parse_imdb_id($row["url"]);
+            if ($imdb_id) {
+                $coverSrc = $imdb->getMovieCover($imdb_id);
+            }
         }
         $tdCover = sprintf('<td class="embedded" style="text-align: center;width: 46px;height: 46px"><img src="pic/misc/spinner.svg" data-src="%s" class="nexus-lazy-load" style="max-height: 46px;max-width: 46px" /></td>', $coverSrc);
     }
@@ -3648,7 +3775,7 @@ foreach ($rows as $row)
 	print("</td>");
 
     if ($enableImdb || $enablePtGen) {
-        echo $torrent->renderTorrentsPageAverageRating($row);
+        echo $torrent->renderTorrentsPageAverageRating($row, $ptGenInfo[$row['id']] ?? []);
     }
 		$act = "";
 		if ($CURUSER["dlicon"] != 'no' && $CURUSER["downloadpos"] != "no")
@@ -3758,10 +3885,12 @@ foreach ($rows as $row)
 
 	if (user_can('torrentmanage'))
 	{
+        $actions = [];
         if (user_can('torrent-delete')) {
-            print("<td class=\"rowfollow\"><a href=\"".htmlspecialchars("fastdelete.php?id=".$row['id'])."\"><img class=\"staff_delete\" src=\"pic/trans.gif\" alt=\"D\" title=\"".$lang_functions['text_delete']."\" /></a>");
+            $actions[] = "<a href=\"".htmlspecialchars("fastdelete.php?id=".$row['id'])."\"><img class=\"staff_delete\" src=\"pic/trans.gif\" alt=\"D\" title=\"".$lang_functions['text_delete']."\" /></a>";
         }
-		print("<br /><a href=\"edit.php?returnto=" . rawurlencode($_SERVER["REQUEST_URI"]) . "&amp;id=" . $row["id"] . "\"><img class=\"staff_edit\" src=\"pic/trans.gif\" alt=\"E\" title=\"".$lang_functions['text_edit']."\" /></a></td>\n");
+        $actions[] = "<a href=\"edit.php?returnto=" . rawurlencode($_SERVER["REQUEST_URI"]) . "&amp;id=" . $row["id"] . "\"><img class=\"staff_edit\" src=\"pic/trans.gif\" alt=\"E\" title=\"".$lang_functions['text_edit']."\" /></a>";
+		echo sprintf("<td class=\"rowfollow\">%s</td>", implode("<br />", $actions));
 	}
 	print("</tr>\n");
 	$counter++;
@@ -4138,7 +4267,8 @@ function getimdb($imdb_id, $cache_stamp, $mode = 'minor')
 				}
 				else { //for tv series
 					$creator = $movie->creator();
-					$director_or_creator = "<strong><font color=\"DarkRed\">".$lang_functions['text_creator'].": </font></strong>".$creator;
+                    $names = array_column($creator, "name");
+					$director_or_creator = "<strong><font color=\"DarkRed\">".$lang_functions['text_creator'].": </font></strong>".implode(", ", $names);
 				}
 				$cast = $movie->cast();
 				$temp = "";
@@ -4265,12 +4395,23 @@ function permissiondenied($allowMinimumClass = null){
 	if ($allowMinimumClass === null) {
         stderr($lang_functions['std_error'], $lang_functions['std_permission_denied']);
     } else {
-        stderr($lang_functions['std_sorry'],$lang_functions['std_permission_denied_only'].get_user_class_name($allowMinimumClass,false,true,true).$lang_functions['std_or_above_can_view'],false);
+        stderr($lang_functions['std_sorry'],$lang_functions['std_permission_denied_only'].get_user_class_name($allowMinimumClass,false,true,true).sprintf($lang_functions['std_or_above_can_view'], \App\Models\Setting::getSiteName()),false);
     }
 }
 
 function gettime($time, $withago = true, $twoline = false, $forceago = false, $oneunit = false, $isfuturetime = false){
-	global $lang_functions, $CURUSER;
+    if (empty($time)) {
+        return null;
+    }
+	if (!IN_NEXUS) {
+        try {
+            return \Carbon\Carbon::parse($time)->diffForHumans();
+        } catch (\Exception $e) {
+            do_log($e->getMessage() . $e->getTraceAsString(), 'error');
+            return $time;
+        }
+    }
+    global $lang_functions, $CURUSER;
 	if (isset($CURUSER) && $CURUSER['timetype'] != 'timealive' && !$forceago){
 		$newtime = $time;
 		if ($twoline){
@@ -4756,13 +4897,11 @@ function get_torrent_promotion_append_sub($promotion = 1,$forcemode = "",$showti
 
 function get_hr_img(array $torrent, $searchBoxId)
 {
-//    $mode = get_setting('hr.mode');
     $mode = \App\Models\HitAndRun::getConfig('mode', $searchBoxId);
     $result = '';
     if ($mode == \App\Models\HitAndRun::MODE_GLOBAL || ($mode == \App\Models\HitAndRun::MODE_MANUAL && isset($torrent['hr']) && $torrent['hr'] == \App\Models\Torrent::HR_YES)) {
         $result = '<img class="hitandrun" src="pic/trans.gif" alt="H&R" title="H&R" />';
     }
-    do_log("searchBoxId: $searchBoxId, mode: $mode, result: $result");
     return $result;
 }
 
@@ -4864,8 +5003,10 @@ function get_searchbox_value($mode = 1, $item = 'showsubcat'){
 }
 
 function get_ratio($userid, $html = true){
-	global $lang_functions;
 	$row = get_user_row($userid);
+    if (empty($row)) {
+        return "---";
+    }
 	$uped = $row['uploaded'];
 	$downed = $row['downloaded'];
 	if ($html == true){
@@ -4879,7 +5020,7 @@ function get_ratio($userid, $html = true){
 				$ratio = "<font color=\"".$color."\">".$ratio."</font>";
 		}
 		elseif ($uped > 0)
-			$ratio = $lang_functions['text_inf'];
+			$ratio = nexus_trans("label.infinite");
 		else
 			$ratio = "---";
 	}
@@ -5269,7 +5410,7 @@ function saveSetting(string $prefix, array $nameAndValue, string $autoload = 'ye
 {
     $prefix = strtolower($prefix);
     $datetimeNow = date('Y-m-d H:i:s');
-    $sql = "insert into `settings` (name, value, created_at, updated_at, autoload) values ";
+    $sql = "insert into settings (name, value, created_at, updated_at, autoload) values ";
     $data = [];
     foreach ($nameAndValue as $name => $value) {
         if (is_array($value)) {
@@ -5277,7 +5418,7 @@ function saveSetting(string $prefix, array $nameAndValue, string $autoload = 'ye
         }
         $data[] = sprintf("(%s, %s, %s, %s, '%s')", sqlesc("$prefix.$name"), sqlesc($value), sqlesc($datetimeNow), sqlesc($datetimeNow), $autoload);
     }
-    $sql .= implode(",", $data) . " on duplicate key update value = values(value)";
+    $sql .= implode(",", $data) . " " . \Nexus\Database\NexusDB::upsertField(['name'], ['value']);
     \Nexus\Database\NexusDB::statement($sql);
     clear_setting_cache();
     do_action("nexus_setting_update");
@@ -5537,7 +5678,7 @@ function strip_all_tags($text)
 {
     //替换掉无参数标签
     $bbTags = [
-        '[*]', '[b]', '[/b]', '[i]', '[/i]', '[u]', '[/u]', '[pre]', '[/pre]', '[quote]', '[/quote]',
+        '[*]', '[b]', '[/b]', '[i]', '[/i]', '[u]', '[/u]', '[s]', '[/s]', '[pre]', '[/pre]', '[quote]', '[/quote]',
         '[/color]', '[/font]', '[/size]', '[/url]', '[/youtube]', '[/spoiler]',
     ];
     $text = str_replace($bbTags, '', $text);
@@ -5788,27 +5929,14 @@ function can_access_torrent($torrent, $uid)
 
 function get_ip_location_from_geoip($ip): bool|array
 {
-    $database = nexus_env('GEOIP2_DATABASE');
-    if (empty($database)) {
-        do_log("no geoip2 database.");
-        return false;
-    }
-    if (!is_readable($database)) {
-        do_log("geoip2 database: $database is not readable.");
-        return false;
-    }
-    static $reader;
-    if (is_null($reader)) {
-        $reader = new \GeoIp2\Database\Reader($database);
-    }
-    $lang = get_langfolder_cookie();
-    $langMap = [
-        'chs' => 'zh-CN',
-        'cht' => 'zh-CN',
-        'en' => 'en',
-    ];
-    $locale = $langMap[$lang] ?? $lang;
-    $locationInfo = \Nexus\Database\NexusDB::remember("locations_{$ip}", 3600, function () use ($locale, $ip, $reader) {
+    $locationInfo = \Nexus\Database\NexusDB::remember("locations_{$ip}", 864000, function () use ($ip) {
+        $lang = get_langfolder_cookie();
+        $langMap = [
+            'chs' => 'zh-CN',
+            'cht' => 'zh-CN',
+            'en' => 'en',
+        ];
+        $locale = $langMap[$lang] ?? $lang;
         $info = [
             'ip' => $ip,
             'version' => '',
@@ -5816,11 +5944,23 @@ function get_ip_location_from_geoip($ip): bool|array
             'city' => '',
             'country_en' => '',
             'city_en' => '',
+            'continent_en' => '',
         ];
         try {
+            $database = nexus_env('GEOIP2_DATABASE');
+            if (empty($database)) {
+                do_log("no geoip2 database.");
+                return false;
+            }
+            if (!is_readable($database)) {
+                do_log("geoip2 database: $database is not readable.");
+                return false;
+            }
+            $reader = new \GeoIp2\Database\Reader($database);
             $record = $reader->city($ip);
             $countryName =  $record->country->names[$locale] ?? $record->country->names['en'] ?? '';
             $cityName = $record->city->names[$locale] ?? $record->city->names['en'] ?? '';
+            $continentName = $record->continent->names[$locale] ?? $record->continent->names['en'] ?? '';
             if (isIPV4($ip)) {
                 $info['version'] = 4;
             } elseif (isIPV6($ip)) {
@@ -5830,13 +5970,17 @@ function get_ip_location_from_geoip($ip): bool|array
             $info['country_en'] = $record->country->names['en'] ?? '';
             $info['city'] = $cityName;
             $info['city_en'] = $record->city->names['en'] ?? '';
-
+            $info['continent'] = $continentName;
+            $info['continent_en'] = $record->continent->names['en'] ?? '';
         } catch (\Exception $exception) {
-            do_log($exception->getMessage() . $exception->getTraceAsString(), 'error');
+            do_log($exception->getMessage() . ", trace: " .  $exception->getTraceAsString(), 'error');
         }
         return $info;
     });
-    do_log("ip: $ip, locale: $locale, result: " . nexus_json_encode($locationInfo));
+    do_log("ip: $ip, result: " . nexus_json_encode($locationInfo));
+    if ($locationInfo === false) {
+        return false;
+    }
     $name = sprintf('%s[v%s]', $locationInfo['city'] ? ($locationInfo['city'] . "·" . $locationInfo['country']) : $locationInfo['country'], $locationInfo['version']);
     return [
         'name' => $name,
@@ -5848,12 +5992,13 @@ function get_ip_location_from_geoip($ip): bool|array
         'ip_version' => $locationInfo['version'],
         'country_en' => $locationInfo['country_en'],
         'city_en' => $locationInfo['city_en'],
+        'continent_en' => $locationInfo['continent_en'],
     ];
 }
 
 function msgalert($url, $text, $bgcolor = "red")
 {
-    print("<table border=\"0\" cellspacing=\"0\" cellpadding=\"10\"><tr><td style='border: none; padding: 10px; background: ".$bgcolor."'>\n");
+    print("<table border=\"0\" cellspacing=\"0\" cellpadding=\"10\" style=\"margin: 0 auto;\"><tr><td style='border: none; padding: 10px; background: ".$bgcolor."; text-align: center;'>\n");
     if (!empty($url)) {
         print("<b><a href=\"".$url."\" target='_blank'><font color=\"white\">".$text."</font></a></b>");
     } else {
@@ -5865,17 +6010,19 @@ function msgalert($url, $text, $bgcolor = "red")
 function build_medal_image(\Illuminate\Support\Collection $medals, $maxHeight = 200, $withActions = false): string
 {
     $medalImages = [];
-    $wrapBefore = '<form><div style="display: flex;justify-content: center;margin-top: 10px;">';
+    $wrapBefore = '<form><div style="display: flex;flex-wrap: wrap;justify-content: center;margin-top: 10px;">';
     $wrapAfter = '</div></form>';
     foreach ($medals as $medal) {
         $html = sprintf('<div style="display: flex;flex-direction: column;justify-content: space-between;margin-right: 10px"><div><img src="%s" title="%s" class="preview" style="max-height: %spx;max-width: %spx"/></div>', $medal->image_large, $medal->name, $maxHeight, $maxHeight);
         if ($withActions) {
             $html .= sprintf(
-                '<div style="display: flex;flex-direction: column;align-items:flex-start"><span>%s: %s</span><span>%s: %s</span><label>%s: <input type="number" name="priority_%s" value="%s" style="width: 50px" placeholder="%s"></label>',
+                '<div style="display: flex;flex-direction: column;align-items:flex-start"><span>%s: %s</span><span>%s: %s</span><span>%s: %s</span><label>%s: <input type="number" name="priority_%s" value="%s" style="width: 50px" placeholder="%s"></label>',
                 nexus_trans('label.expire_at'),
                 $medal->pivot->expire_at ? format_datetime($medal->pivot->expire_at) : nexus_trans('label.permanent'),
                 nexus_trans('medal.fields.bonus_addition_factor'),
                 $medal->bonus_addition_factor ?? 0,
+                nexus_trans('medal.bonus_addition_expire_at'),
+                $medal->pivot->bonus_addition_expire_at ? format_datetime($medal->pivot->bonus_addition_expire_at) : nexus_trans('label.permanent'),
                 nexus_trans('label.priority'),
                 $medal->pivot->id,
                 $medal->pivot->priority ?? 0,
@@ -5900,26 +6047,32 @@ function build_medal_image(\Illuminate\Support\Collection $medals, $maxHeight = 
 function insert_torrent_tags($torrentId, $tagIdArr, $sync = false)
 {
     $specialTags = \App\Models\Tag::listSpecial();
-    $canSetSpecialTag = user_can('torrent-set-special-tag');
+    $canSetSpecialTag = \App\Auth\Permission::canSetTorrentSpecialTag();
     $dateTimeStringNow = date('Y-m-d H:i:s');
     if ($sync) {
-        sql_query("delete from torrent_tags where torrent_id = $torrentId");
+        $delQuery = \App\Models\TorrentTag::query()->where("torrent_id", $torrentId);
+        if (!$canSetSpecialTag) {
+            $delQuery->whereNotIn("tag_id", $specialTags);
+        }
+        $delQuery->delete();
     }
     if (empty($tagIdArr)) {
         return;
     }
-    $insertTagsSql = 'insert into torrent_tags (`torrent_id`, `tag_id`, `created_at`, `updated_at`) values ';
+    $insertTagsSql = 'insert into torrent_tags (torrent_id, tag_id, created_at, updated_at) values ';
     $values = [];
     foreach ($tagIdArr as $tagId) {
         if (in_array($tagId, $specialTags) && !$canSetSpecialTag) {
             do_log("special tag: $tagId, and user no permission");
             continue;
         }
-        $values[] = sprintf("(%s, %s, '%s', '%s')", $torrentId, $tagId, $dateTimeStringNow, $dateTimeStringNow);
+        if (!isset($values[$tagId])) {
+            $values[$tagId] = sprintf("(%s, %s, '%s', '%s')", $torrentId, $tagId, $dateTimeStringNow, $dateTimeStringNow);
+        }
     }
     $insertTagsSql .= implode(', ', $values);
     do_log("[INSERT_TAGS], torrent: $torrentId with tags: " . nexus_json_encode($tagIdArr));
-    sql_query($insertTagsSql);
+    \Nexus\Database\NexusDB::statement($insertTagsSql);
 }
 
 function get_smile($num)
@@ -5964,6 +6117,7 @@ function calculate_seed_bonus($uid, $torrentIdArr = null): array
     $nzero_bonus = $settingBonus['nzero'];
     $bzero_bonus = $settingBonus['bzero'];
     $l_bonus = $settingBonus['l'];
+    $minSize = $settingBonus['min_size'] ?? 0;
 
     $sqrtof2 = sqrt(2);
     $logofpointone = log(0.1);
@@ -5983,9 +6137,9 @@ function calculate_seed_bonus($uid, $torrentIdArr = null): array
             $torrentIdArr = [-1];
         }
         $idStr = implode(',', \Illuminate\Support\Arr::wrap($torrentIdArr));
-        $sql = "select torrents.id, torrents.added, torrents.size, torrents.seeders, 'NO_PEER_ID' as peerID, '' as last_action from torrents  WHERE id in ($idStr)";
+        $sql = "select torrents.id, torrents.added, torrents.size, torrents.seeders, 'NO_PEER_ID' as peerID, '' as last_action, '' as ip from torrents  WHERE id in ($idStr) and size >= $minSize";
     } else {
-        $sql = "select torrents.id, torrents.added, torrents.size, torrents.seeders, peers.id as peerID, peers.last_action from torrents LEFT JOIN peers ON peers.torrent = torrents.id WHERE peers.userid = $uid AND peers.seeder ='yes' group by peers.torrent, peers.peer_id";
+        $sql = "select torrents.id, torrents.added, torrents.size, torrents.seeders, peers.id as peerID, peers.last_action, peers.ip from torrents LEFT JOIN peers ON peers.torrent = torrents.id WHERE peers.userid = $uid AND peers.seeder ='yes' and torrents.size > $minSize group by torrents.id, peers.id";
     }
     $tagGrouped = [];
     $torrentResult = \Nexus\Database\NexusDB::select($sql);
@@ -6000,14 +6154,25 @@ function calculate_seed_bonus($uid, $torrentIdArr = null): array
     $officialAdditionalFactor = \App\Models\Setting::get('bonus.official_addition');
     $zeroBonusTag = \App\Models\Setting::get('bonus.zero_bonus_tag');
     $zeroBonusFactor = \App\Models\Setting::get('bonus.zero_bonus_factor');
-    $userMedalResult = \Nexus\Database\NexusDB::select("select sum(bonus_addition_factor) as factor from medals where id in (select medal_id from user_medals where uid = $uid and (expire_at is null or expire_at > '$nowStr'))");
+    if (\Nexus\Database\NexusDB::isMysql()) {
+        $factorField = "round(sum(bonus_addition_factor), 5)";
+    } elseif (\Nexus\Database\NexusDB::isPgsql()) {
+        $factorField = "round(sum(bonus_addition_factor)::numeric, 5)";
+    } else {
+        throw new \RuntimeException("Not supported database");
+    }
+    $userMedalResult = \Nexus\Database\NexusDB::select("select $factorField as factor from medals where id in (select medal_id from user_medals where uid = $uid and (expire_at is null or expire_at > '$nowStr') and (bonus_addition_expire_at is null or bonus_addition_expire_at > '$nowStr'))");
     $medalAdditionalFactor = floatval($userMedalResult[0]['factor'] ?? 0);
     do_log("$logPrefix, sql: $sql, count: " . count($torrentResult) . ", officialTag: $officialTag, officialAdditionalFactor: $officialAdditionalFactor, zeroBonusTag: $zeroBonusTag, zeroBonusFactor: $zeroBonusFactor, medalAdditionalFactor: $medalAdditionalFactor");
     $last_action = "";
+    $ip_arr = [];
     foreach ($torrentResult as $torrent)
     {
         if ($torrent['last_action'] > $last_action) {
             $last_action = $torrent['last_action'];
+        }
+        if (!empty($torrent['ip']) && !isset($ip_arr[$torrent['ip']])) {
+            $ip_arr[$torrent['ip']] = $torrent['ip'];
         }
         $size = bcadd($size, $torrent['size']);
         $weeks_alive = ($timenow - strtotime($torrent['added'])) / $sectoweek;
@@ -6039,11 +6204,12 @@ function calculate_seed_bonus($uid, $torrentIdArr = null): array
     $medal_bonus = $valuetwo * atan($A / $l_bonus);
     $result = compact(
         'seed_points','seed_bonus', 'A', 'count', 'torrent_peer_count', 'size', 'last_action',
-        'official_bonus', 'official_a', 'official_torrent_peer_count', 'official_size', 'medal_bonus'
+        'official_bonus', 'official_a', 'official_torrent_peer_count', 'official_size', 'medal_bonus',
     );
     $result['donor_times'] = $donortimes_bonus;
     $result['official_additional_factor'] = $officialAdditionalFactor;
     $result['medal_additional_factor'] = $medalAdditionalFactor;
+    $result['ip_arr'] = array_keys($ip_arr);
     do_log("$logPrefix, result: " . json_encode($result));
     return $result;
 }
@@ -6106,7 +6272,7 @@ function build_search_box_category_table($mode, $checkboxValue, $categoryHrefPre
     //Category
     $html .= sprintf('<tr><td class="embedded" align="left">%s</td></tr>', nexus_trans('label.search_box.category'));
     /** @var \Illuminate\DataBase\Eloquent\Collection $categoryCollection */
-    $categoryCollection = $searchBox->categories()->orderBy('sort_index', 'desc')->get();
+    $categoryCollection = $searchBox->categories()->with('icon')->orderBy('sort_index', 'desc')->get();
     if (!empty($options['select_unselect'])) {
         $categoryCollection->push(new \App\Models\Category(['mode' => -1]));
     }
@@ -6169,7 +6335,7 @@ TD;
         /** @var \Illuminate\DataBase\Eloquent\Collection $taxonomyCollection */
         $taxonomyCollection = \Nexus\Database\NexusDB::table($tableName)
             ->where(function (\Illuminate\Database\Query\Builder $query) use ($mode) {
-                return $query->where('mode', $mode)->orWhere('mode', 0);
+                return $query->whereIn('mode', [$mode, 0]);
             })
             ->orderBy('sort_index', 'desc')
             ->get()
@@ -6190,7 +6356,7 @@ TD;
                         $afterInput = $item->name;
                     }
                     $checked = '';
-                    do_log("toCheck: $checkedValues, $namePrefix - {$item->id}");
+                    do_log("toCheck: $checkedValues, $namePrefix - {$item->id}", 'debug');
                     if ($checkedValues) {
                         if (
                             str_contains($checkedValues, "[{$namePrefix}{$item->id}]")
@@ -6270,27 +6436,24 @@ function build_bonus_table(array $user, array $bonusResult = [], array $options 
         $baseBonusFactor = $donortimes_bonus;
     }
     $baseBonus = $bonusResult['seed_bonus'] * $baseBonusFactor;
-    $totalBonus = number_format(
-        $baseBonus
-        + $haremAddition * $haremFactor
-        + $bonusResult['official_bonus'] * $officialAdditionalFactor
-        + $bonusResult['medal_bonus'] * $bonusResult['medal_additional_factor']
-        , 3
-    );
+    $totalBonus = $baseBonus;
 
     $rowSpan = 1;
     $hasHaremAddition = $hasOfficialAddition = $hasMedalAddition = false;
     if ($haremFactor > 0) {
         $rowSpan++;
         $hasHaremAddition = true;
+        $totalBonus +=  $haremAddition * $haremFactor;
     }
     if ($officialAdditionalFactor > 0 && $officialTag) {
         $rowSpan++;
         $hasOfficialAddition = true;
+        $totalBonus += $bonusResult['official_bonus'] * $officialAdditionalFactor;
     }
     if ($bonusResult['medal_additional_factor'] > 0) {
         $rowSpan++;
         $hasMedalAddition = true;
+        $totalBonus += $bonusResult['medal_bonus'] * $bonusResult['medal_additional_factor'];
     }
 
     $table = sprintf('<table cellpadding="5" style="%s">', $options['table_style'] ?? '');
@@ -6315,7 +6478,7 @@ function build_bonus_table(array $user, array $bonusResult = [], array $options 
         $baseBonusFactor,
         number_format($baseBonus,3),
         $rowSpan,
-        $totalBonus
+        number_format($totalBonus, 3)
     );
     if ($hasMedalAddition) {
         $table .= sprintf(
@@ -6325,7 +6488,7 @@ function build_bonus_table(array $user, array $bonusResult = [], array $options 
             mksize($bonusResult['size']),
             number_format($bonusResult['A'], 3),
             number_format($bonusResult['medal_bonus'], 3),
-            $bonusResult['medal_additional_factor'],
+            number_format($bonusResult['medal_additional_factor'], 3),
             number_format($bonusResult['medal_bonus'] * $bonusResult['medal_additional_factor'], 3)
         );
     }
@@ -6338,7 +6501,7 @@ function build_bonus_table(array $user, array $bonusResult = [], array $options 
             mksize($bonusResult['official_size']),
             number_format($bonusResult['official_a'], 3),
             number_format($bonusResult['official_bonus'], 3),
-            $officialAdditionalFactor,
+            number_format($officialAdditionalFactor, 3),
             number_format($bonusResult['official_bonus'] * $officialAdditionalFactor, 3)
         );
     }
@@ -6351,7 +6514,7 @@ function build_bonus_table(array $user, array $bonusResult = [], array $options 
             '--',
             '--',
             number_format($haremAddition, 3),
-            $haremFactor,
+            number_format($haremFactor, 3),
             number_format($haremAddition * $haremFactor, 3)
         );
     }
@@ -6389,18 +6552,21 @@ function torrent_name_for_admin(\App\Models\Torrent|null $torrent, $withTags = f
         return '';
     }
     $name = sprintf(
-        '<div class="text-primary-600 transition hover:underline hover:text-primary-500 focus:underline focus:text-primary-500"><a href="/details.php?id=%s" target="_blank" title="%s">%s</a></div>',
+        '<div class="fi-color fi-color-primary fi-text-color-600 dark:fi-text-color-300 fi-link fi-size-sm fi-ac-link-action"><a href="/details.php?id=%s" target="_blank" title="%s">%s</a></div>',
         $torrent->id, $torrent->name, Str::limit($torrent->name, $length)
     );
     $tags = '';
     if ($withTags) {
         $tags = sprintf('&nbsp;<div>%s</div>', $torrent->tagsFormatted);
     }
-    return new HtmlString('<div class="flex">' . $name . $tags . '</div>');
+    return new HtmlString('<div style="display:flex">' . $name . $tags . '</div>');
 }
 
 function username_for_admin(int $id)
 {
+    if (empty($id)) {
+        return '';
+    }
     return new HtmlString(get_username($id, false, true, true, true));
 }
 
@@ -6452,6 +6618,46 @@ function can_view_post($uid, $post)
     }
     do_log("$log, TRUE");
     return true;
+}
+
+function hide_text($text) {
+    return '<span class="hidden-text">' . $text . '</span>';
+}
+
+function make_content_disposition(string $filename, string $disposition = 'attachment'): string {
+    $filenameFallback = str_replace('%', '', Str::ascii($filename));
+    return \Symfony\Component\HttpFoundation\HeaderUtils::makeDisposition($disposition, $filename, $filenameFallback);
+}
+
+function bbcode_attach_to_img(string $text) {
+    $pattern = "/\[attach\]([0-9a-zA-z][0-9a-zA-z]*)\[\/attach\]/is";
+    return preg_replace_callback($pattern, function ($matches) {
+        $dlkey = $matches[1];
+        $httpdirectory_attachment = get_setting('attachment.httpdirectory');
+        $row = \Nexus\Database\NexusDB::remember('attachment_'.$dlkey.'_content', 86400, function() use ($dlkey) {
+            $record =  \App\Models\Attachment::query()->where("dlkey", $dlkey)->first();
+            if ($record) {
+                return $record->toArray();
+            }
+            return [];
+        });
+        if (empty($row) || $row['isimage'] != 1) {
+            do_log(sprintf("dlkey: %s get attachment %s not exists or not image", $dlkey, json_encode($row)));
+            return $matches[0];
+        }
+        $driver = $row['driver'] ?? 'local';
+        if ($driver == "local") {
+            if ($row['thumb'] == 1){
+                $url = $httpdirectory_attachment."/".$row['location'].".thumb.jpg";
+            } else {
+                $url = $httpdirectory_attachment."/".$row['location'];
+            }
+            $url = sprintf("%s/%s", getSchemeAndHttpHost(true), trim($url, "/"));
+        } else {
+            $url = \Nexus\Attachment\Storage::getDriver($driver)->getImageUrl($row['location']);
+        }
+        return "[img]" . $url . "[/img]";
+    }, $text, 20);
 }
 
 ?>

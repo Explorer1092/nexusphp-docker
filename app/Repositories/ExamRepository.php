@@ -31,8 +31,8 @@ class ExamRepository extends BaseRepository
 
     public function store(array $params)
     {
-        $this->checkIndexes($params);
-        $this->checkBeginEnd($params);
+        $diffInHours = $this->checkBeginEnd($params);
+        $this->checkIndexes($params, $diffInHours);
         $this->checkFilters($params);
         /**
          * does not limit this
@@ -48,8 +48,8 @@ class ExamRepository extends BaseRepository
 
     public function update(array $params, $id)
     {
-        $this->checkIndexes($params);
-        $this->checkBeginEnd($params);
+        $diffInHours = $this->checkBeginEnd($params);
+        $this->checkIndexes($params, $diffInHours);
         $this->checkFilters($params);
         /**
          * does not limit this
@@ -76,7 +76,7 @@ class ExamRepository extends BaseRepository
         return $params;
     }
 
-    private function checkIndexes(array $params): bool
+    private function checkIndexes(array $params, float $examDuration): bool
     {
         if (empty($params['indexes'])) {
             throw new \InvalidArgumentException("Require index.");
@@ -94,6 +94,14 @@ class ExamRepository extends BaseRepository
                     'Invalid require value for index: %s.', $index['index']
                 ));
             }
+            if ($index['index'] == Exam::INDEX_SEED_TIME_AVERAGE) {
+                if ($index['require_value'] > $examDuration) {
+                    throw new \InvalidArgumentException(nexus_trans(
+                        'admin.resources.exam.index_seed_time_average_require_value_invalid',
+                        ['index_seed_time_average_require_value' => $index['require_value'], 'duration' => $examDuration]
+                    ));
+                }
+            }
             $validIndex[$index['index']] = $index;
         }
         if (empty($validIndex)) {
@@ -102,28 +110,40 @@ class ExamRepository extends BaseRepository
         return true;
     }
 
-    private function checkBeginEnd(array $params): bool
+    /**
+     * check if begin/end valid, if yes, return diff in hours, else throw InvalidArgumentException
+     * @param array $params
+     * @return float
+     */
+    private function checkBeginEnd(array $params): float
     {
         if (
             !empty($params['begin']) && !empty($params['end'])
             && empty($params['duration'])
             && empty($params['recurring'])
         ) {
-            return true;
+            $begin = Carbon::parse($params['begin']);
+            $end = Carbon::parse($params['end']);
+            return round($begin->diffInHours($end, true));
         }
         if (
             empty($params['begin']) && empty($params['end'])
             && isset($params['duration']) && ctype_digit((string)$params['duration']) && $params['duration'] > 0
             && empty($params['recurring'])
         ) {
-            return true;
+            //unit: day
+            return round(floatval($params['duration']) * 24);
         }
         if (
             empty($params['begin']) && empty($params['end'])
             && empty($params['duration'])
             && !empty($params['recurring'])
         ) {
-            return true;
+            $exam = new Exam(['recurring' => $params['recurring']]);
+            $now = Carbon::now();
+            $begin = $exam->getRecurringBegin($now);
+            $end = $exam->getRecurringEnd($now);
+            return round($begin->diffInHours($end, true));
         }
 
         throw new \InvalidArgumentException(nexus_trans("exam.time_condition_invalid"));
@@ -249,8 +269,24 @@ class ExamRepository extends BaseRepository
         $now = Carbon::now();
         $query = Exam::query()
             ->where('status', Exam::STATUS_ENABLED)
-            ->whereRaw("if(begin is not null and end is not null, begin <= '$now' and end >= '$now', duration > 0 or recurring is not null)")
-        ;
+            ->where(function ($q) use ($now) {
+                $q->where(function ($sub) use ($now) {
+                    // 如果 begin 和 end 都不为空，则判断时间
+                    $sub->whereNotNull('begin')
+                        ->whereNotNull('end')
+                        ->where('begin', '<=', $now)
+                        ->where('end', '>=', $now);
+                })->orWhere(function ($sub) {
+                    // 如果不满足上面的条件（即 begin 或 end 任意一个为空）
+                    $sub->where(function ($inner) {
+                        $inner->whereNull('begin')
+                            ->orWhereNull('end');
+                    })->where(function ($inner) {
+                        $inner->where('duration', '>', 0)
+                            ->orWhereNotNull('recurring');
+                    });
+                });
+            });
 
         if (!is_null($excludeId)) {
             $query->whereNotIn('id', Arr::wrap($excludeId));
@@ -261,6 +297,7 @@ class ExamRepository extends BaseRepository
         if (!is_null($type)) {
             $query->where("type", $type);
         }
+
         return $query->orderBy('priority', 'desc')->orderBy('id', 'asc')->get();
     }
 
@@ -672,8 +709,8 @@ class ExamRepository extends BaseRepository
             if ($index['index'] == Exam::INDEX_SEED_TIME_AVERAGE) {
                 $torrentCountsRes = Snatch::query()
                     ->where('userid', $user->id)
-                    ->where('completedat', '>=', $begin)
-                    ->where('completedat', '<=', $end)
+                    ->where('last_action', '>=', $begin)
+                    ->where('last_action', '<=', $end)
                     ->selectRaw("count(distinct(torrentid)) as counts")
                     ->first();
                 do_log("special index: {$index['index']}, get torrent count by: " . last_query());
@@ -1025,13 +1062,13 @@ class ExamRepository extends BaseRepository
             if ($donateStatus == User::DONATE_YES) {
                 $baseQuery->where(function (Builder $query) {
                     $query->where('donor', 'yes')->where(function (Builder $query) {
-                        $query->where('donoruntil', '0000-00-00 00:00:00')->orWhereNull('donoruntil')->orWhere('donoruntil', '>=', Carbon::now());
+                        $query->whereNull('donoruntil')->orWhere('donoruntil', '>=', Carbon::now());
                     });
                 });
             } elseif ($donateStatus == User::DONATE_NO) {
                 $baseQuery->where(function (Builder $query) {
                     $query->where('donor', 'no')->orWhere(function (Builder $query) {
-                        $query->where('donoruntil', '!=','0000-00-00 00:00:00')->whereNotNull('donoruntil')->where('donoruntil', '<', Carbon::now());
+                        $query->whereNotNull('donoruntil')->where('donoruntil', '<', Carbon::now());
                     });
                 });
             } else {
@@ -1107,22 +1144,44 @@ class ExamRepository extends BaseRepository
 
     public function cronjobCheckout($ignoreTimeRange = false): int
     {
-        $now = Carbon::now()->toDateTimeString();
+        $now = Carbon::now(); // 保持 Carbon 对象即可，Laravel 会自动序列化
         $examUserTable = (new ExamUser())->getTable();
         $examTable = (new Exam())->getTable();
         $userTable = (new User())->getTable();
+
         $baseQuery = ExamUser::query()
             ->join($examTable, "$examUserTable.exam_id", "=", "$examTable.id")
             ->where("$examUserTable.status", ExamUser::STATUS_NORMAL)
-            ->selectRaw("$examUserTable.*")
+            ->select("$examUserTable.*") // 替换 selectRaw
             ->with(['exam', 'user', 'user.language'])
             ->orderBy("$examUserTable.id", "asc");
+
         if (!$ignoreTimeRange) {
-            $whenThens = [];
-            $whenThens[] = "when $examUserTable.`end` is not null then $examUserTable.`end` < '$now'";
-            $whenThens[] = "when $examTable.`end` is not null then $examTable.`end` < '$now'";
-            $whenThens[] = "when $examTable.duration > 0 then date_add($examUserTable.created_at, interval $examTable.duration day) < '$now'";
-            $baseQuery->whereRaw(sprintf("case %s else false end", implode(" ", $whenThens)));
+            $baseQuery->where(function ($query) use ($examUserTable, $examTable, $now) {
+                $query->where(function ($q) use ($examUserTable, $now) {
+                    // 条件 1: exam_user.end 不为空且小于当前时间
+                    $q->whereNotNull("$examUserTable.end")
+                        ->where("$examUserTable.end", '<', $now);
+                })
+                    ->orWhere(function ($q) use ($examTable, $now) {
+                        // 条件 2: exam.end 不为空且小于当前时间
+                        $q->whereNotNull("$examTable.end")
+                            ->where("$examTable.end", '<', $now);
+                    })
+                    ->orWhere(function ($q) use ($examUserTable, $examTable, $now) {
+                        // 条件 3: exam.duration > 0 且过期
+                        // 因为涉及到列与列的计算，这里需要用 whereRaw，但我们可以针对多数据库做自适应
+                        $q->where("$examTable.duration", '>', 0);
+
+                        if (NexusDB::isPgsql()) {
+                            // PG 写法：使用 || 拼接字符串再转为 INTERVAL
+                            $q->whereRaw("$examUserTable.created_at + ($examTable.duration || ' day')::INTERVAL < ?", [$now]);
+                        } else {
+                            // MySQL 写法
+                            $q->whereRaw("DATE_ADD($examUserTable.created_at, INTERVAL $examTable.duration DAY) < ?", [$now]);
+                        }
+                    });
+            });
         }
 
         $size = 1000;

@@ -2,9 +2,14 @@
 
 namespace App\Repositories;
 
+use App\Auth\Permission;
+use App\Enums\ModelEventEnum;
+use App\Events\TorrentUpdated;
 use App\Exceptions\InsufficientPermissionException;
 use App\Exceptions\NexusException;
+use App\Http\Resources\TorrentResource;
 use App\Models\AudioCodec;
+use App\Models\Bookmark;
 use App\Models\Category;
 use App\Models\Claim;
 use App\Models\Codec;
@@ -15,6 +20,7 @@ use App\Models\Peer;
 use App\Models\Processing;
 use App\Models\SearchBox;
 use App\Models\Setting;
+use App\Models\SiteLog;
 use App\Models\Snatch;
 use App\Models\Source;
 use App\Models\StaffMessage;
@@ -26,10 +32,15 @@ use App\Models\TorrentOperationLog;
 use App\Models\TorrentSecret;
 use App\Models\TorrentTag;
 use App\Models\User;
+use App\Utils\ApiQueryBuilder;
 use Carbon\Carbon;
-use Hashids\Hashids;
+use Elasticsearch\Endpoints\Search;
+use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Query\JoinClause;
+use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -51,85 +62,177 @@ class TorrentRepository extends BaseRepository
     const BUY_STATUS_NOT_YET = -1;
     const BUY_STATUS_UNKNOWN = -2;
 
+    private static array $defaultLoadRelationships = [
+        'basic_category', 'basic_category.search_box',
+        'basic_audiocodec', 'basic_codec', 'basic_medium',
+        'basic_source', 'basic_processing', 'basic_standard', 'basic_team',
+    ];
 
+    private static array $allowIncludes = ['user', 'extra', 'tags'];
+
+    private static array $allowIncludeCounts = ['thank_users', 'reward_logs', 'claims'];
+
+    private static array $allowIncludeFields = [
+        'has_bookmarked', 'has_claimed', 'has_thanked', 'has_rewarded',
+        'description', 'download_url', 'active_status'
+    ];
+
+    private static array  $allowFilters = [
+        'title', 'category', 'source', 'medium', 'codec', 'audiocodec', 'standard', 'processing', 'team',
+        'owner', 'visible', 'added', 'size', 'sp_state', 'leechers', 'seeders', 'times_completed',
+        'bookmark',
+    ];
+
+    private static array $allowSorts = ['id', 'comments', 'size', 'seeders', 'leechers', 'times_completed'];
 
     /**
      *  fetch torrent list
-     *
-     * @param array $params
-     * @return \Illuminate\Contracts\Pagination\LengthAwarePaginator
      */
-    public function getList(array $params, User $user)
+    public function getList(Request $request, Authenticatable $user, string $sectionName = null)
     {
-        $query = Torrent::query();
-        if (!empty($params['category'])) {
-            $query->where('category', $params['category']);
+        if (empty($sectionName)) {
+            $sectionId = SearchBox::getBrowseMode();
+            $searchBox = SearchBox::query()->find($sectionId);
+        } else {
+            $searchBox = SearchBox::query()->where('name', $sectionName)->first();
         }
-        if (!empty($params['source'])) {
-            $query->where('source', $params['source']);
+        if (empty($searchBox)) {
+            throw new NexusException(nexus_trans("upload.invalid_section"));
         }
-        if (!empty($params['medium'])) {
-            $query->where('medium', $params['medium']);
+        if (!$searchBox->isSectionBrowse() && $searchBox->isSectionSpecial() && !Permission::canViewSpecialSection()) {
+            throw new InsufficientPermissionException();
         }
-        if (!empty($params['codec'])) {
-            $query->where('codec', $params['codec']);
+        $categoryIdList = $searchBox->categories()->pluck('id')->toArray();
+        //query this info default
+        $query = Torrent::query()->with(self::$defaultLoadRelationships)
+            ->whereIn('category', $categoryIdList)
+            ->orderBy("pos_state", "DESC");
+        $apiQueryBuilder = ApiQueryBuilder::for(TorrentResource::NAME, $query, $request)
+            ->allowIncludes(self::$allowIncludes)
+            ->allowIncludeCounts(self::$allowIncludeCounts)
+            ->allowIncludeFields(self::$allowIncludeFields)
+            ->allowFilters(self::$allowFilters)
+            ->allowSorts(self::$allowSorts)
+            ->registerCustomFilter('title', function (Builder $query, Request $request) {
+                $title = $request->input(ApiQueryBuilder::PARAM_NAME_FILTER.".title");
+                $title = trim(str_replace('.', '', $title));
+                if ($title) {
+                    $titleParts = explode(" ", $title);
+                    $keywordCount = 1;
+                    foreach ($titleParts as $titlePart) {
+                        if ($keywordCount > 3) {
+                            break;
+                        }
+                        $titlePart = trim($titlePart);
+                        $query->where(function (Builder $query) use ($titlePart) {
+                            $query->where('name', 'like', '%' . $titlePart . '%')
+                                ->orWhere('small_descr', 'like', '%' . $titlePart . '%');
+                        });
+                        $keywordCount++;
+                    }
+                }
+            })
+            ->registerCustomFilter('bookmark', function (Builder $query, Request $request) use ($user) {
+                $filterBookmark = $request->input(ApiQueryBuilder::PARAM_NAME_FILTER.".bookmark");
+                if ($filterBookmark === Bookmark::FILTER_INCLUDE) {
+                    $query->whereHas("bookmarks", function (Builder $query) use ($user) {
+                        $query->where("userid", $user->id);
+                    });
+                } elseif ($filterBookmark === Bookmark::FILTER_EXCLUDE) {
+                    $query->whereDoesntHave("bookmarks", function (Builder $query) use ($user) {
+                        $query->where("userid", $user->id);
+                    });
+                }
+            })
+            ->registerCustomFilter('visible', function (Builder $query, Request $request) use ($user) {
+                $filterVisible = $request->input(ApiQueryBuilder::PARAM_NAME_FILTER.".visible", Torrent::FILTER_VISIBLE_YES);
+                if ($filterVisible === Torrent::FILTER_VISIBLE_YES) {
+                    $query->where('visible', Torrent::VISIBLE_YES);
+                } elseif ($filterVisible === Torrent::FILTER_VISIBLE_NO) {
+                    $query->where('visible', Torrent::VISIBLE_NO);
+                }
+            })
+        ;
+        $query = $apiQueryBuilder->build();
+        if (!$apiQueryBuilder->hasSort() || !$apiQueryBuilder->hasSort('id')) {
+            $query->orderBy("id", "DESC");
         }
-        if (!empty($params['audio_codec'])) {
-            $query->where('audiocodec', $params['audio_codec']);
-        }
-        if (!empty($params['standard'])) {
-            $query->where('standard', $params['standard']);
-        }
-        if (!empty($params['processing'])) {
-            $query->where('processing', $params['processing']);
-        }
-        if (!empty($params['team'])) {
-            $query->where('team', $params['team']);
-        }
-        if (!empty($params['owner'])) {
-            $query->where('owner', $params['owner']);
-        }
-        if (!empty($params['visible'])) {
-            $query->where('visible', $params['visible']);
-        }
-
-        if (!empty($params['query'])) {
-            $query->where(function (Builder $query) use ($params) {
-                $query->where('name', 'like', "%{$params['query']}%")
-                    ->orWhere('small_descr', 'like', "%{$params['query']}%");
-            });
-        }
-
-        if (!empty($params['category_mode'])) {
-            $query->whereHas('basic_category', function (Builder $query) use ($params) {
-                $query->where('mode', $params['category_mode']);
-            });
-        }
-
-        $query = $this->handleGetListSort($query, $params);
-
-        $with = ['user', 'tags'];
-        $torrents = $query->with($with)->paginate();
-        foreach ($torrents as &$item) {
-            $item->download_url = $this->getDownloadUrl($item->id, $user);
-        }
-        return $torrents;
+        do_log("before query torrent list");
+        $torrents = $query->paginate($this->getPerPageFromRequest($request));
+        do_log("after query torrent list");
+        return $this->appendIncludeFields($apiQueryBuilder, $user, $torrents);
     }
 
-    public function getDetail($id, User $user)
+    public function getDetail($id, Authenticatable $user)
     {
-        $with = [
-            'user', 'basic_audio_codec', 'basic_category', 'basic_codec', 'basic_media', 'basic_source', 'basic_standard', 'basic_team',
-            'thanks' => function ($query) use ($user) {
-                $query->where('userid', $user->id);
-            },
-            'reward_logs' => function ($query) use ($user) {
-                $query->where('userid', $user->id);
-            },
-        ];
-        $result = Torrent::query()->with($with)->withCount(['peers', 'thank_users', 'reward_logs'])->visible()->findOrFail($id);
-        $result->download_url = $this->getDownloadUrl($id, $user);
-        return $result;
+        //query this info default
+        $query = Torrent::query()->with(self::$defaultLoadRelationships);
+        $apiQueryBuilder = ApiQueryBuilder::for(TorrentResource::NAME, $query)
+            ->allowIncludes(self::$allowIncludes)
+            ->allowIncludeCounts(self::$allowIncludeCounts)
+            ->allowIncludeFields(self::$allowIncludeFields)
+        ;
+        do_log("before query torrent detail");
+        $torrent = $apiQueryBuilder->build()->findOrFail($id);
+        do_log("before query torrent detail");
+        $torrentList = $this->appendIncludeFields($apiQueryBuilder, $user, [$torrent]);
+        return $torrentList[0];
+    }
+
+    private function appendIncludeFields(ApiQueryBuilder $apiQueryBuilder, Authenticatable $user, $torrentList)
+    {
+        $torrentIdArr = $bookmarkData = $claimData = $thankData = $rewardData = $activeData = [];
+        foreach ($torrentList as $torrent) {
+            $torrentIdArr[] = $torrent->id;
+        }
+        unset($torrent);
+        if ($hasFieldHasBookmarked = $apiQueryBuilder->hasIncludeField('has_bookmarked')) {
+            $bookmarkData = $user->bookmarks()->whereIn('torrentid', $torrentIdArr)->get()->keyBy('torrentid');
+        }
+        if ($hasFieldHasClaimed = $apiQueryBuilder->hasIncludeField('has_claimed')) {
+            $claimData = $user->claims()->whereIn('torrent_id', $torrentIdArr)->get()->keyBy('torrent_id');
+        }
+        if ($hasFieldHasThanked = $apiQueryBuilder->hasIncludeField('has_thanked')) {
+            $thankData = $user->thank_torrent_logs()->whereIn('torrentid', $torrentIdArr)->get()->keyBy('torrentid');
+        }
+        if ($hasFieldHasRewarded = $apiQueryBuilder->hasIncludeField('has_rewarded')) {
+            $rewardData = $user->reward_torrent_logs()->whereIn('torrentid', $torrentIdArr)->get()->keyBy('torrentid');
+        }
+        if ($hasFieldActiveStatus = $apiQueryBuilder->hasIncludeField('active_status')) {
+            $torrentModule = new \Nexus\Torrent\Torrent();
+            $activeData = $torrentModule->listLeechingSeedingStatus($user->id, $torrentIdArr);
+        }
+        do_log("after prepare has data");
+
+        foreach ($torrentList as $torrent) {
+            $id = $torrent->id;
+            if ($hasFieldHasBookmarked) {
+                $torrent->has_bookmarked = $bookmarkData->has($id);
+            }
+            if ($hasFieldHasClaimed) {
+                $torrent->has_claimed = $claimData->has($id);
+            }
+            if ($hasFieldHasThanked) {
+                $torrent->has_thanked = $thankData->has($id);
+            }
+            if ($hasFieldHasRewarded) {
+                $torrent->has_rewarded = $rewardData->has($id);
+            }
+            if ($hasFieldActiveStatus) {
+                $torrent->active_status = $activeData[$id] ?? null;
+            }
+
+            if ($apiQueryBuilder->hasIncludeField('description') && $apiQueryBuilder->hasInclude('extra')) {
+                $descriptionArr = format_description($torrent->extra->descr ?? '');
+                $torrent->description = $descriptionArr;
+                $torrent->images = get_image_from_description($descriptionArr);
+            }
+            if ($apiQueryBuilder->hasIncludeField("download_url")) {
+                $torrent->download_url = $this->getDownloadUrl($id, $user);
+            }
+        }
+        do_log("after fill has data");
+        return $torrentList;
     }
 
     public function getDownloadUrl($id, array|User $user): string
@@ -646,7 +749,7 @@ class TorrentRepository extends BaseRepository
                     $values[] = sprintf("(%s, %s, '%s', '%s')", $torrentId, $tagId, $time, $time);
                 }
             }
-            $sql .= implode(', ', $values) . " on duplicate key update updated_at = values(updated_at)";
+            $sql .= implode(', ', $values) . " " . NexusDB::upsertField(['torrent_id', 'tag_id'], ['updated_at']);
             if ($remove) {
                 TorrentTag::query()->whereIn('torrent_id', $idArr)->delete();
             }
@@ -785,20 +888,51 @@ HTML;
     }
 
     /**
-     * 购买成功缓存，保存为 hash，一个种子一个 hash，永久有效
+     * 购买成功，缓存 30 天并更新到 snatched 上
      * @param $uid
      * @param $torrentId
      * @return void
      * @throws \RedisException
      */
-    public function addBuySuccessCache($uid, $torrentId): void
+    public function addBuySuccessCache($uid, $torrentId, $buyLogId): void
     {
-        NexusDB::redis()->hSet($this->getBoughtUserCacheKey($torrentId), $uid, 1);
+        NexusDB::redis()->set($this->getBoughtUserCacheKey($torrentId, $uid), 1, ['NX', 'EX' => 86400*30]);
+        $record = Snatch::query()
+            ->where("torrentid", $torrentId)
+            ->where("userid", $uid)
+            ->first();
+        if ($record) {
+            $record->buy_log_id = $buyLogId;
+            $record->save();
+            publish_model_event(ModelEventEnum::SNATCHED_UPDATED, $record->id);
+        } else {
+            do_log("addBuySuccessCache, uid: $uid, torrentId: $torrentId, buyLogId: $buyLogId, snatched not exists", 'error');
+        }
+
     }
 
     public function hasBuySuccessCache($uid, $torrentId): bool
     {
-        return NexusDB::redis()->hGet($this->getBoughtUserCacheKey($torrentId), $uid) == 1;
+        $key = $this->getBoughtUserCacheKey($torrentId, $uid);
+        if (NexusDB::redis()->exists($key)) {
+            return true;
+        }
+        return false;
+    }
+
+    public function hasBuySuccess($uid, $torrentId): bool
+    {
+        if ($this->hasBuySuccessCache($uid, $torrentId)) {
+            return true;
+        }
+        $buyLog = TorrentBuyLog::query()
+            ->where("torrent_id", $torrentId)
+            ->where("uid", $uid)
+            ->first();
+        if ($buyLog) {
+            $this->addBuySuccessCache($uid, $torrentId, $buyLog->id);
+        }
+        return $buyLog != null;
     }
 
     /**
@@ -810,8 +944,8 @@ HTML;
      */
     public function getBuyStatus($uid, $torrentId): int
     {
-        //查询是否已经购买
-        if ($this->hasBuySuccessCache($uid, $torrentId)) {
+        //从缓存中判断是否购买过
+        if ($this->hasBuySuccess($uid, $torrentId)) {
             return self::BUY_STATUS_SUCCESS;
         }
         //是否购买失败过
@@ -855,12 +989,13 @@ HTML;
 
     /**
      * 购买成功缓存 key
+     * @update 改为使用字符串判断键是否存在即可
      * @param $torrentId
      * @return string
      */
-    public function getBoughtUserCacheKey($torrentId): string
+    public function getBoughtUserCacheKey($torrentId, $userId): string
     {
-        return  sprintf("%s:%s", self::BOUGHT_USER_CACHE_KEY_PREFIX, $torrentId);
+        return  sprintf("%s:%s:%s", self::BOUGHT_USER_CACHE_KEY_PREFIX, $torrentId, $userId);
     }
 
     /**
@@ -997,11 +1132,80 @@ HTML;
             NexusDB::cache_del('imdb_id_'.$thenumbers.'_large', true);
             NexusDB::cache_del('imdb_id_'.$thenumbers.'_median', true);
             NexusDB::cache_del('imdb_id_'.$thenumbers.'_minor', true);
+            NexusDB::cache_del(Imdb::getMovieCoverCacheKey($imdb_id));
             do_log("$log, done");
         } catch (\Exception $e) {
             $log .= ", error: " . $e->getMessage() . ", trace: " . $e->getTraceAsString();
             do_log($log, 'error');
         }
+    }
+
+    public function changeCategory(Collection $torrents, int $sectionId, array $specificSubCategoryAndTags): void
+    {
+        assert_has_permission(Permission::canManageTorrent());
+        $torrentIdArr = $torrents->pluck('id')->toArray();
+        if (empty($torrentIdArr)) {
+            do_log("torrents is empty", 'warn');
+            return;
+        }
+        $torrentIdStr = implode(',', $torrentIdArr);
+        do_log("torrentIdStr: $torrentIdStr, sectionId: $sectionId");
+        $searchBoxRep = new SearchBoxRepository();
+        $sections = $searchBoxRep->listSections(SearchBox::listAllSectionId(), true)->keyBy('id');
+        if (!$sections->has($sectionId)) {
+            throw new NexusException(nexus_trans('upload.invalid_section'));
+        }
+        /**
+         * @var $section SearchBox
+         */
+        $section = $sections->get($sectionId);
+        $validCategoryIdArr = $section->categories->pluck('id')->toArray();
+        if (!empty($specificSubCategoryAndTags['category']) && !in_array($specificSubCategoryAndTags['category'], $validCategoryIdArr)) {
+            throw new NexusException(nexus_trans('upload.invalid_category'));
+        }
+        $baseUpdateQuery = Torrent::query()->whereIn('id', $torrentIdArr);
+        $updateCategoryQuery = $baseUpdateQuery->clone();
+        if (!empty($validCategoryId)) {
+            $updateCategoryQuery->whereNotIn('category', $validCategoryIdArr);
+        }
+        $updateCategoryResult = $updateCategoryQuery->update(['category' => 0]);
+        do_log(sprintf("update category = 0 when category not in: %s, result: %s", implode(', ', $validCategoryIdArr), $updateCategoryResult));
+
+        foreach (SearchBox::$taxonomies as $name => $info) {
+            $relationName = "taxonomy_{$name}";
+            $relation = $section->{$relationName};
+            if (empty($specificSubCategoryAndTags[$name])) {
+                continue;
+            }
+            //有指定，看是否有效
+            if (!$relation) {
+                do_log("searchBox: {$section->id} no relation of $name");
+                throw new NexusException(nexus_trans('upload.not_supported_sub_category_field', ['field' => $name]));
+            }
+            $validIdArr = $relation->pluck('id')->toArray();
+            if (!in_array($specificSubCategoryAndTags[$name], $validIdArr)) {
+                do_log("taxonomy {$name}, specific: {$specificSubCategoryAndTags[$name]} not in validIdArr: " . implode(', ', $validIdArr));
+                throw new NexusException(nexus_trans('upload.not_supported_sub_category_field', ['field' => $name]));
+            }
+
+        }
+        $operatorId = get_user_id();
+        $siteLogArr = [];
+        foreach ($torrents as $torrent) {
+            $siteLogArr[] = [
+                'added' => now(),
+                'txt' => sprintf("torrent: %s category was set to: %s(%s)", $torrent->id, $category->name, $category->id),
+                'uid' => $operatorId,
+            ];
+        }
+        NexusDB::transaction(function () use ($torrentIdArr, $categoryId, $siteLogArr) {
+            SiteLog::query()->insert($siteLogArr);
+            Torrent::query()->whereIn('id', $torrentIdArr)->update(['category' => $categoryId]);
+        });
+        foreach ($torrents as $torrent) {
+            fire_event(ModelEventEnum::TORRENT_UPDATED, $torrent);
+        }
+        do_log("success change to section $sectionId, torrent count:" . $torrents->count());
     }
 
 }

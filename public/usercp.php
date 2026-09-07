@@ -4,6 +4,7 @@ dbconn();
 require_once(get_langfile_path());
 loggedinorreturn();
 $userInfo = \App\Models\User::query()->findOrFail($CURUSER["id"]);
+$siteName = \App\Models\Setting::getSiteName();
 function bark($msg) {
 	stdhead();
 	global $lang_usercp;
@@ -128,6 +129,7 @@ if ($action){
 				//	$updateset[] = "tzoffset = " . sqlesc($tzoffset);
 
 				$updateset[] = "info = " . sqlesc($info);
+				$updateset[] = "tracker_url_id = " . sqlesc($_POST["tracker_url_id"]);
 
 				//notifs
                 if (!empty($_POST['notifs'])) {
@@ -144,10 +146,12 @@ if ($action){
                 }
 				$query = "UPDATE users SET " . implode(",", $updateset) . " WHERE id = ".sqlesc($CURUSER["id"]);
 				$result = sql_query($query);
-				if (!$result)
-				sqlerr(__FILE__,__LINE__);
-				else
-				header("Location: usercp.php?action=personal&type=saved");
+				if (!$result) {
+                    sqlerr(__FILE__,__LINE__);
+                } else {
+                    clear_user_cache($CURUSER["id"], $CURUSER['passkey']);
+                    header("Location: usercp.php?action=personal&type=saved");
+                }
 			}
 			stdhead($lang_usercp['head_control_panel'].$lang_usercp['head_personal_settings'],true);
 
@@ -155,11 +159,18 @@ if ($action){
 			$ct_r = sql_query("SELECT id,name FROM countries ORDER BY name") or die;
 			while ($ct_a = mysql_fetch_array($ct_r))
 			$countries .= "<option value=".htmlspecialchars($ct_a['id'])."" . (htmlspecialchars($CURUSER["country"]) == htmlspecialchars($ct_a['id']) ? " selected" : "") . ">".htmlspecialchars($ct_a['name'])."</option>\n";
-			$isplist = "<option value=0>---- ".$lang_usercp['select_none_selected']." ----</option>\n";
+
+            $trackerUrls = "<option value=0>---- ".$lang_usercp['select_none_selected']." ----</option>\n";
+            $trackerUrlList = \App\Models\TrackerUrl::listAll();
+            foreach ($trackerUrlList as $item) {
+                $trackerUrls .= "<option value=".htmlspecialchars($item->id)."" . (htmlspecialchars($CURUSER["tracker_url_id"]) == htmlspecialchars($item->id) ? " selected" : "") . ">".htmlspecialchars($item->url)."</option>\n";
+            }
+            $isplist = "<option value=0>---- ".$lang_usercp['select_none_selected']." ----</option>\n";
 			$isp_r = sql_query("SELECT id,name FROM isp ORDER BY id ASC") or die;
 			while ($isp_a = mysql_fetch_array($isp_r))
 			$isplist .= "<option value=".htmlspecialchars($isp_a['id'])."" . (htmlspecialchars($CURUSER["isp"]) == htmlspecialchars($isp_a['id']) ? " selected" : "") . ">".htmlspecialchars($isp_a['name'])."</option>\n";
-			$downloadspeed = "<option value=0>---- ".$lang_usercp['select_none_selected']." ----</option>\n";
+
+            $downloadspeed = "<option value=0>---- ".$lang_usercp['select_none_selected']." ----</option>\n";
 			$ds_a = sql_query("SELECT id,name FROM downloadspeed ORDER BY id") or die;
 			while ($ds_b = mysql_fetch_array($ds_a))
 			$downloadspeed .= "<option value=".htmlspecialchars($ds_b['id'])."" . (htmlspecialchars($CURUSER["download"]) == htmlspecialchars($ds_b['id']) ? " selected" : "") . ">".htmlspecialchars($ds_b['name'])."</option>\n";
@@ -198,7 +209,8 @@ if ($action){
 			tr_small($lang_usercp['row_gender'],
 			"<input type=radio name=gender" . ($CURUSER["gender"] == "N/A" ? " checked" : "") . " value=N/A>".$lang_usercp['radio_not_available']."
 <input type=radio name=gender" . ($CURUSER["gender"] == "Male" ? " checked" : "") . " value=Male>".$lang_usercp['radio_male']."<input type=radio name=gender" .  ($CURUSER["gender"] == "Female" ? " checked" : "") . " value=Female>".$lang_usercp['radio_female'],1);
-			tr_small($lang_usercp['row_country'], "<select name=country>\n$countries\n</select>",1);
+            tr_small($lang_usercp['row_tracker_url'], "<select name=tracker_url_id>\n$trackerUrls\n</select>" . "<br /><font class=small size=1>".$lang_usercp['row_tracker_url_help']."</font>",1);
+            tr_small($lang_usercp['row_country'], "<select name=country>\n$countries\n</select>",1);
 		//School select
 if ($showschool == 'yes'){
 $schools = "<option value=35>---- ".$lang_usercp['select_none_selected']." ----</option>n";
@@ -213,7 +225,7 @@ tr($lang_usercp['row_school'], "<select name=school>$schools</select>", 1);
   <option value='$CURUSER[avatar]'>".$lang_usercp['select_choose_avatar']."</option>
   <option value='" . get_protocol_prefix() . $BASEURL . "/pic/default_avatar.png'>".$lang_usercp['select_nothing']."</option>
   $text
-  </select><input type=text name=avatar style=\"width: 400px\" value=\"" . htmlspecialchars($CURUSER["avatar"]) .
+  </select><input type=text name=avatar style=\"width: 400px\" value=\"" . htmlspecialchars($CURUSER["avatar"] ?? '') .
   "\"><br />\n".$lang_usercp['text_avatar_note'].($enablebitbucket_main == 'yes' ? $lang_usercp['text_bitbucket_note'] : ""),1);
   tr($lang_usercp['row_info'], "<textarea name=\"info\" style=\"width:700px\" rows=\"10\" >" . htmlspecialchars($CURUSER["info"]) . "</textarea><br />".$lang_usercp['text_info_note'], 1);
   submit();
@@ -224,7 +236,7 @@ tr($lang_usercp['row_school'], "<select name=school>$schools</select>", 1);
 		case "tracker":
 			$showaddisabled = true;
 			if ($enablead_advertisement == 'yes'){
-				if (get_user_class() >= $noad_advertisement || ($enablebonusnoad_advertisement == 'yes' && strtotime($CURUSER['noaduntil']) >= TIMENOW)){
+				if (get_user_class() >= $noad_advertisement || ($enablebonusnoad_advertisement == 'yes' && !empty($CURUSER['noaduntil']) && strtotime($CURUSER['noaduntil']) >= TIMENOW)){
 					$showaddisabled = false;
 				}
 			}
@@ -585,7 +597,7 @@ if ($showaudiocodec) $audiocodecs = searchbox_item_list("audiocodecs");
             $categories = build_search_box_category_table($browsecatmode, 'yes','torrents.php?allsec=1', false, 3, $CURUSER['notifs'], ['section_name' => true]);
             $delimiter = '<div style="height: 1px;background-color: #eee;margin: 10px 0"></div>';
             if (get_setting('main.spsct') == 'yes') {
-                $categories .= $delimiter . build_search_box_category_table($specialcatmode, 'yes','torrents.php?allsec=1', false, 3, $CURUSER['notifs'], ['section_name' => true]);
+                $categories .= $delimiter . build_search_box_category_table($specialcatmode, 'yes','special.php?allsec=1', false, 3, $CURUSER['notifs'], ['section_name' => true]);
             }
             $categories .= $delimiter . "<table><caption><font class='big'>{$lang_usercp['text_additional_selection']}</font></caption><tr><td class=bottom><b>".$lang_usercp['text_show_dead_active']."</b><br /><select name=\"incldead\"><option value=\"0\" ".(strpos($CURUSER['notifs'], "[incldead=0]") !== false ? " selected" : "").">".$lang_usercp['select_including_dead']."</option><option value=\"1\" ".(strpos($CURUSER['notifs'], "[incldead=1]") !== false ||  strpos($CURUSER['notifs'], "incldead") == false ? " selected" : "").">".$lang_usercp['select_active']."</option><option value=\"2\" ".(strpos($CURUSER['notifs'], "[incldead=2]") !== false  ? " selected" : "").">".$lang_usercp['select_dead']."</option></select></td><td class=bottom align=left><b>".$lang_usercp['text_show_special_torrents']."</b><br /><select name=\"spstate\"><option value=\"0\" ".($special_state == 0 ? " selected" : "").">".$lang_usercp['select_all']."</option>".promotion_selection($special_state)."</select></td><td class=bottom><b>".$lang_usercp['text_show_bookmarked']."</b><br /><select name=\"inclbookmarked\"><option value=\"0\" ".(strpos($CURUSER['notifs'], "[inclbookmarked=0]") !== false ? " selected" : "").">".$lang_usercp['select_all']."</option><option value=\"1\" ".(strpos($CURUSER['notifs'], "[inclbookmarked=1]") !== false ? " selected" : "")." >".$lang_usercp['select_bookmarked']."</option><option value=\"2\" ".(strpos($CURUSER['notifs'], "[inclbookmarked=2]") !== false ? " selected" : "").">".$lang_usercp['select_bookmarked_exclude']."</option></select></td></tr></table>";
             tr_small($lang_usercp['row_browse_default_categories'], $categories,1);
@@ -622,7 +634,7 @@ if ($showaudiocodec) $audiocodecs = searchbox_item_list("audiocodecs");
 
 			$s = "<select name=\"sitelanguage\">\n";
 
-			$langs = langlist("site_lang");
+			$langs = langlist("site_lang", true);
 
 			foreach ($langs as $row)
 			{
@@ -778,8 +790,10 @@ tr_small($lang_usercp['row_funbox'],"<input type=checkbox name=showfb".($CURUSER
 					$passhash = hash('sha256', $sec . $chpassword);
 					$updateset[] = "secret = " . sqlesc($sec);
 					$updateset[] = "passhash = " . sqlesc($passhash);
+                    $authKey = mksecret();
+					$updateset[] = "auth_key = " . sqlesc($authKey);
 
-					logincookie($CURUSER["id"],  $userInfo->auth_key);
+					logincookie($CURUSER["id"], $authKey);
 					$passupdated = 1;
 				}
 
@@ -812,8 +826,10 @@ tr_small($lang_usercp['row_funbox'],"<input type=checkbox name=showfb".($CURUSER
 					$obemail = rawurlencode($email);
 					$updateset[] = "editsecret = " . sqlesc($sec);
 					$subject = "$SITENAME".$lang_usercp['mail_profile_change_confirmation'];
+                    $changeEmailOne = sprintf($lang_usercp['mail_change_email_one'], $siteName);
+                    $changeEmailNine = sprintf($lang_usercp['mail_change_email_nine'], $siteName);
 					$body = <<<EOD
-{$lang_usercp['mail_change_email_one']}{$CURUSER["username"]}{$lang_usercp['mail_change_email_two']}($email){$lang_usercp['mail_change_email_three']}
+{$changeEmailOne}{$CURUSER["username"]}{$lang_usercp['mail_change_email_two']}($email){$lang_usercp['mail_change_email_three']}
 
 {$lang_usercp['mail_change_email_four']}{$_SERVER["REMOTE_ADDR"]}{$lang_usercp['mail_change_email_five']}
 
@@ -823,7 +839,7 @@ http://$BASEURL/confirmemail.php/{$CURUSER["id"]}/$hash/$obemail
 {$lang_usercp['mail_change_email_seven']}
 
 ------{$lang_usercp['mail_change_email_eight']}
-{$lang_usercp['mail_change_email_nine']}
+{$changeEmailNine}
 EOD;
 
 					sent_mail($email,$SITENAME,$SITEEMAIL,$subject,str_replace("<br />","<br />",nl2br($body)),"profile change",false,false,'');
@@ -920,6 +936,9 @@ EOD;
                 $twoStepY .= '</div>';
                 tr_small($lang_usercp['row_two_step_secret'], $twoStepY, 1);
             }
+            printf('<tr><td class="rowhead" valign="top" align="right">%s</td><td class="rowfollow" valign="top" align="left">', nexus_trans('passkey.passkey'));
+            \App\Repositories\UserPasskeyRepository::renderList($CURUSER['id']);
+            printf('</td></tr>');
 
 			if ($disableemailchange != 'no' && $smtptype != 'none') //system-wide setting
 				tr_small($lang_usercp['row_email_address'], "<input type=\"text\" name=\"email\" style=\"width: 200px\" value=\"" . htmlspecialchars($CURUSER["email"]) . "\" /> <br /><font class=small>".$lang_usercp['text_email_address_note']."</font>", 1);
@@ -978,14 +997,14 @@ tr_small($lang_usercp['row_email_address'], $CURUSER['email'], 1);
 $seedBoxIcon = (new \App\Repositories\SeedBoxRepository())->renderIcon($CURUSER['ip'], $CURUSER['id']);
 if ($enablelocation_tweak == 'yes'){
 	list($loc_pub, $loc_mod) = get_ip_location($CURUSER["ip"]);
-	tr_small($lang_usercp['row_ip_location'], $CURUSER["ip"]." <span title='" . $loc_mod . "'>[" . $loc_pub . "]</span>$seedBoxIcon", 1);
+	tr_small($lang_usercp['row_ip_location'], hide_text($CURUSER["ip"]." <span title='" . $loc_mod . "'>[" . $loc_pub . "]</span>$seedBoxIcon"), 1);
 }
 else{
-	tr_small($lang_usercp['row_ip_location'], $CURUSER["ip"] . $seedBoxIcon, 1);
+	tr_small($lang_usercp['row_ip_location'], hide_text($CURUSER["ip"] . $seedBoxIcon), 1);
 }
 if ($CURUSER["avatar"])
 	tr_small($lang_usercp['row_avatar'], "<img src=\"" . $CURUSER["avatar"] . "\" border=0>", 1);
-tr_small($lang_usercp['row_passkey'], $CURUSER["passkey"], 1);
+tr_small($lang_usercp['row_passkey'], hide_text($CURUSER["passkey"]), 1);
 if (get_setting('security.login_type') == 'passkey' && get_setting('security.login_secret_deadline') > date('Y-m-d H:i:s')) {
     tr_small($lang_usercp['row_passkey_login_url'], sprintf('%s/%s/%s', getSchemeAndHttpHost(), get_setting('security.login_secret'), $CURUSER['passkey']), 1);
 }
@@ -1004,8 +1023,8 @@ if (get_setting('seed_box.enabled') == 'yes') {
     $seedBox = '';
     $columnOperator = nexus_trans('label.seed_box_record.operator');
     $columnBandwidth = nexus_trans('label.seed_box_record.bandwidth');
-    $columnIPBegin = nexus_trans('label.seed_box_record.ip_begin');
-    $columnIPEnd = nexus_trans('label.seed_box_record.ip_end');
+//    $columnIPBegin = nexus_trans('label.seed_box_record.ip_begin');
+//    $columnIPEnd = nexus_trans('label.seed_box_record.ip_end');
     $columnIP = nexus_trans('label.seed_box_record.ip');
     $columnIPHelp = nexus_trans('label.seed_box_record.ip_help');
     $columnComment = nexus_trans('label.comment');
@@ -1030,30 +1049,6 @@ if (get_setting('seed_box.enabled') == 'yes') {
     }
     $seedBox .= sprintf('<div><input type="button" id="add-seed-box-btn" value="%s"/></div>', $lang_usercp['add_seed_box_btn']);
     tr_small($lang_usercp['row_seed_box'], $seedBox, 1);
-    $seedBoxCss = <<<CSS
-.form-box {
-padding: 15px;
-}
-.form-control-row {
-display: flex;
-align-items: center;
-padding: 10px 0;
-}
-.form-control-row .label {
-width: 80px
-}
-.form-control-row .field {
-
-}
-.form-control-row input[type=text],textarea {
-width: 300px;
-padding: 4px;
-}
-.form-control-row input[type=checkbox] {
-vertical-align: sub;
-}
-CSS;
-
     $seedBoxForm = <<<FORM
 <div class="form-box">
 <form id="seed-box-form">
@@ -1066,16 +1061,8 @@ CSS;
         <div class="field"><input type="number" name="params[bandwidth]"></div>
     </div>
     <div class="form-control-row">
-        <div class="label">{$columnIPBegin}</div>
-        <div class="field"><input type="text" name="params[ip_begin]"></div>
-    </div>
-    <div class="form-control-row">
-        <div class="label">{$columnIPEnd}</div>
-        <div class="field"><input type="text" name="params[ip_end]"></div>
-    </div>
-    <div class="form-control-row">
         <div class="label">{$columnIP}</div>
-        <div class="field"><input type="text" name="params[ip]"><div><small>{$columnIPHelp}</small></div></div>
+        <div class="field"><input type="text" name="params[ip]"></div>
     </div>
     <div class="form-control-row">
         <div class="label">{$columnComment}</div>
@@ -1094,8 +1081,9 @@ jQuery('#add-seed-box-btn').on('click', function () {
         btnAlign: 'c',
         yes: function () {
             let params = jQuery('#seed-box-form').serialize()
+            jQuery('body').loading({stoppable: false});
             jQuery.post('ajax.php', params + "&action=addSeedBoxRecord", function (response) {
-                console.log(response)
+                jQuery('body').loading('stop');
                 if (response.ret != 0) {
                     layer.alert(response.msg)
                     return
@@ -1107,11 +1095,12 @@ jQuery('#add-seed-box-btn').on('click', function () {
 });
 jQuery('#seed-box-table').on('click', '.remove-seed-box-btn', function () {
     let params = {action: "removeSeedBoxRecord", params: {id: jQuery(this).attr("data-id")}}
-    layer.confirm("{$lang_functions['std_confirm_remove']}", {btnAlign: 'c'}, function (index) {
+    layer.confirm("{$lang_functions['std_confirm_remove']}", window.nexusLayerOptions.confirm, function (index) {
+        jQuery('body').loading({stoppable: false});
         jQuery.post('ajax.php', params, function (response) {
-            console.log(response)
+            jQuery('body').loading('stop');
             if (response.ret != 0) {
-                layer.alert(response.msg)
+                layer.alert(response.msg, window.nexusLayerOptions.alert)
                 return
             }
             window.location.reload()
@@ -1120,13 +1109,11 @@ jQuery('#seed-box-table').on('click', '.remove-seed-box-btn', function () {
 });
 JS;
     \Nexus\Nexus::js($seedBoxJs, 'footer', false);
-    \Nexus\Nexus::css($seedBoxCss, 'footer', false);
 }
 //end seed box
 
 //token start
-$tokenRep = new \App\Repositories\TokenRepository();
-$permissions = $tokenRep->listUserTokenPermissions();
+$permissions = \App\Repositories\TokenRepository::listUserTokenPermissionAllowed();
 $permissionOptions = [];
 foreach ($permissions as $name => $label) {
     $permissionOptions[] = sprintf('<label><input type="checkbox" name="permissions[]" value="%s">%s</label>', $name, $label);
@@ -1150,7 +1137,7 @@ if ($res->count() > 0)
         $token .= sprintf('<td>%s</td>', $tokenRecord->name);
         $token .= sprintf('<td>%s</td>', $tokenRecord->abilitiesText);
         $token .= sprintf('<td>%s</td>', $tokenRecord->created_at);
-        $token .= sprintf('<td><span style="cursor: pointer;margin-right: 10px" class="token-get" data-id="%s">获取</span><span style="cursor: pointer" title="%s" data-id="%s" class="token-del">删除</span></td>', $tokenRecord->id, $lang_functions['text_delete'], $tokenRecord->id);
+        $token .= sprintf('<td><img style="cursor: pointer" class="staff_delete token-del" src="pic/trans.gif" alt="D" title="%s" data-id="%s"></td>', $lang_functions['text_delete'], $tokenRecord->id);
         $token .= "</tr>";
     }
     $token .= '</table>';
@@ -1184,45 +1171,35 @@ jQuery('#add-token-box-btn').on('click', function () {
             jQuery('body').loading({stoppable: false});
             let params = jQuery('#token-box-form').serialize()
             jQuery.post('/web/token/add', params, function (response) {
+                 jQuery('body').loading('stop');
                 console.log(response)
                 if (response.ret != 0) {
-                    jQuery('body').loading('stop');
-                    layer.alert(response.msg)
-                    return
+                    layer.alert(response.msg, window.nexusLayerOptions.alert)
+                } else {
+                    layer.alert(response.msg, window.nexusLayerOptions.alert, function(index) {
+                        layer.close(index);
+                        window.location.reload()
+                    })
                 }
-                window.location.reload()
             }, 'json')
         }
     })
 });
 jQuery('#token-table').on('click', '.token-del', function () {
     let params = {id: jQuery(this).attr("data-id")}
-    layer.confirm("{$lang_functions['std_confirm_remove']}", {btnAlign: 'c'}, function (index) {
+    layer.confirm("{$lang_functions['std_confirm_remove']}", window.nexusLayerOptions.confirm, function (index) {
         layer.close(index)
         jQuery('body').loading({stoppable: false});
         jQuery.post('/web/token/del', params, function (response) {
             console.log(response)
             if (response.ret != 0) {
                 jQuery('body').loading('stop');
-                layer.alert(response.msg)
+                layer.alert(response.msg, window.nexusLayerOptions.alert)
                 return
             }
             window.location.reload()
         }, 'json')
     })
-});
-jQuery('#token-table').on('click', '.token-get', function () {
-    let params = {id: jQuery(this).attr("data-id")}
-    jQuery('body').loading({stoppable: false});
-    jQuery.post('/web/token/get-plain', params, function (response) {
-        console.log(response)
-        jQuery('body').loading('stop');
-        if (response.ret != 0) {
-            layer.alert(response.msg)
-        } else {
-            layer.alert(response.data)
-        }
-    }, 'json')
 });
 JS;
     \Nexus\Nexus::js($tokenBoxJs, 'footer', false);

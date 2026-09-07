@@ -2,13 +2,15 @@
 
 namespace App\Models;
 
+use App\Models\Traits\NexusActivityLogTrait;
 use Carbon\Carbon;
-use Google\Service\Dataproc\RegexValidation;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 
 class Exam extends NexusModel
 {
+    use NexusActivityLogTrait;
+
     protected $fillable = [
         'name', 'description', 'begin', 'end', 'duration', 'status', 'is_discovered', 'filters', 'indexes', 'priority',
         'recurring', 'type', 'success_reward_bonus', 'fail_deduct_bonus', 'max_user_count', 'background_color',
@@ -223,7 +225,7 @@ class Exam extends NexusModel
             return Carbon::parse($this->end);
         }
         if (!empty($this->duration)) {
-            return $this->getBeginForUser()->clone()->addDays($this->duration);
+            return $this->getBeginForUser()->clone()->addDays((int)$this->duration);
         }
         if (!empty($this->recurring)) {
             return $this->getRecurringEnd(Carbon::now());
@@ -233,6 +235,7 @@ class Exam extends NexusModel
 
     public function getRecurringBegin(Carbon $time): Carbon
     {
+        $time = $time->copy();
         $recurring = $this->recurring;
         if ($recurring == self::RECURRING_WEEKLY) {
             return $time->startOfWeek();
@@ -246,6 +249,7 @@ class Exam extends NexusModel
 
     public function getRecurringEnd(Carbon $time): Carbon
     {
+        $time = $time->copy();
         $recurring = $this->recurring;
         if ($recurring == self::RECURRING_WEEKLY) {
             return $time->endOfWeek();

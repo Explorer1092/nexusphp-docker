@@ -1,6 +1,6 @@
 中文 | [English](/README-EN.md)
 
-完整的 PT 建站解决方案。基于 NexusPHP + Laravel + Filament。
+完整的 PT 建站解决方案。基于 NexusPHP + Laravel + FilamentPHP。
 
 欢迎参与国际化工作，点击 [这里](https://github.com/xiaomlove/nexusphp/discussions/193) 了解详情
 
@@ -40,9 +40,9 @@
 - TGBot
 
 ## 系统要求
-- PHP: 8.0|8.1|8.2，必须扩展：bcmath, ctype, curl, fileinfo, json, mbstring, openssl, pdo_mysql, tokenizer, xml, mysqli, gd, redis, pcntl, sockets, posix, gmp, zend opcache
-- Mysql: 5.7 最新版或以上版本
-- Redis：2.6.12 或以上版本
+- PHP: 8.2|8.3|8.4|8.5，必须扩展：bcmath, ctype, curl, fileinfo, json, mbstring, openssl, pdo_mysql, tokenizer, xml, mysqli, gd, redis, pcntl, sockets, posix, gmp, zend opcache, zip, intl, pdo_sqlite, sqlite3, pdo_pgsql
+- Database: MySQL 5.7 最新版或以上版本/PostgreSQL 16 或以上版本
+- Redis：4.0.0 或以上版本
 - 其他：supervisor, rsync
 
 ## 快速开始
@@ -64,8 +64,4 @@ docker run --name my-nexusphp -e DOMAIN=xxx.com -p 80:80 xiaomlove/nexusphp:late
 ## 更多信息
 博客：[https://nexusphp.org](http://nexusphp.org/)  
 文档：[https://doc.nexusphp.org](http://doc.nexusphp.org/)  
-Telegram: [https://t.me/nexusphp](https://t.me/nexusphp)  
-
-## Project supported by JetBrains
-Many thanks to Jetbrains for kindly providing a license for me to work on this and other open-source projects.  
-[![](https://resources.jetbrains.com/storage/products/company/brand/logos/jb_beam.svg)](https://www.jetbrains.com/?from=https://github.com/xiaomlove/nexusphp)
+Telegram: [https://t.me/nexusphp_dev](https://t.me/nexusphp_dev)  

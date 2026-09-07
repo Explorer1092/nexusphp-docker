@@ -35,7 +35,7 @@ if ($Attach->enable_attachment())
 		$ext_l = strrpos($origfilename, ".");
 		$ext = strtolower(substr($origfilename, $ext_l+1, strlen($origfilename)-($ext_l+1)));
 		$banned_ext = array('exe', 'com', 'bat', 'msi');
-		$img_ext = array('jpeg', 'jpg', 'png', 'gif');
+		$img_ext = \App\Models\Attachment::IMG_EXTENSIONS;
 
 		if (!$file || $filesize == 0 || $file["name"] == "") // nothing received
 		{
@@ -235,11 +235,12 @@ if ($Attach->enable_attachment())
                 if ($hasthumb) {
                     $url .= ".thumb.jpg";
                 }
+                $location = $db_file_location.".".$ext;
             } else {
                 try {
                     $driver = \Nexus\Attachment\Storage::getDriver();
                     $location = $driver->uploadGetLocation($file["tmp_name"], $file['name']);
-                    $db_file_location = substr($location, 0, -1*strlen($ext)-1);
+                    do_log("location: $location");
                     $url = $driver->getImageUrl($location);
                 } catch (\Exception $exception) {
                     do_log("upload failed: " . $exception->getMessage() . $exception->getTraceAsString(), 'error');
@@ -248,8 +249,8 @@ if ($Attach->enable_attachment())
             }
 			if (!$warning) //insert into database and add code to editor
 			{
-				$dlkey = md5($db_file_location.".".$ext);
-				sql_query("INSERT INTO attachments (userid, width, added, filename, filetype, filesize, location, dlkey, isimage, thumb, driver) VALUES (".$CURUSER['id'].", ".$width.", ".sqlesc(date("Y-m-d H:i:s")).", ".sqlesc($origfilename).", ".sqlesc($filetype).", ".$filesize.", ".sqlesc($db_file_location.".".$ext).", ".sqlesc($dlkey).", ".($isimage ? 1 : 0).", ".($hasthumb ? 1 : 0). "," .sqlesc($storageDriver) . ")") or sqlerr(__FILE__, __LINE__);
+				$dlkey = md5($location . microtime(true));
+				sql_query("INSERT INTO attachments (userid, width, added, filename, filetype, filesize, location, dlkey, isimage, thumb, driver) VALUES (".$CURUSER['id'].", ".$width.", ".sqlesc(date("Y-m-d H:i:s")).", ".sqlesc($origfilename).", ".sqlesc($filetype).", ".$filesize.", ".sqlesc($location).", ".sqlesc($dlkey).", ".($isimage ? 1 : 0).", ".($hasthumb ? 1 : 0). "," .sqlesc($storageDriver) . ")") or sqlerr(__FILE__, __LINE__);
 				$count_left--;
 				if (!empty($_REQUEST['callback_func']) && preg_match('/^preview_custom_field_image_\d+$/', $_REQUEST['callback_func'])) {
                     echo sprintf('<script type="text/javascript">parent.%s("%s", "%s")</script>', $_REQUEST['callback_func'], $dlkey, $url);

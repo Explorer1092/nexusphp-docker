@@ -10,7 +10,7 @@ class Chevereto extends Storage {
     {
         $api = get_setting("image_hosting_chevereto.upload_api_endpoint");
         $token = get_setting("image_hosting_chevereto.upload_token");
-        $logPrefix = "filepath: $filepath, api: $api, token: $token";
+        $logPrefix = "filepath: $filepath, api: $api";
         $httpClient = new \GuzzleHttp\Client();
         $response = $httpClient->request('POST', $api, [
             'headers' => [
@@ -20,6 +20,10 @@ class Chevereto extends Storage {
                 [
                     'name'     => 'source',
                     'contents' => Psr7\Utils::tryFopen($filepath, 'r')
+                ],
+                [
+                    'name'     => 'key',
+                    'contents' => $token
                 ]
             ]
         ]);
@@ -40,7 +44,9 @@ class Chevereto extends Storage {
             do_log("$logPrefix, no image url", "error");
             throw new \Exception("upload fail: " . ($result["error"]["message"] ?? ""));
         }
-        return $result["image"]["url"];
+        $url = $result["image"]["url"];
+        do_log("$logPrefix, upload success, url: $url");
+        return $url;
     }
 
     function getBaseUrl(): string

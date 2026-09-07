@@ -47,7 +47,7 @@ class TagRepository extends BaseRepository
 
     public static function createBasicQuery()
     {
-        return Tag::query()->orderBy('priority', 'asc')->orderBy('id', 'asc');
+        return Tag::query()->orderBy('priority', 'desc')->orderBy('id', 'desc');
     }
 
     public function renderCheckbox(int $searchBoxId, array $checked = [], $ignorePermission = false): string
@@ -133,7 +133,7 @@ class TagRepository extends BaseRepository
             }
             $page++;
         }
-        $sql .= sprintf("%s on duplicate key update updated_at = values(updated_at)", implode(', ', $values));
+        $sql .= sprintf("%s %s", implode(', ', $values), NexusDB::upsertField(['torrent_id', 'tag_id'], ['updated_at']));
         do_log("migrate sql: $sql");
         NexusDB::statement($sql);
         do_log("[MIGRATE_TORRENT_TAG] done!");

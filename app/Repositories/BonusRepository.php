@@ -15,6 +15,7 @@ use App\Models\UserMedal;
 use App\Models\UserMeta;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
+use Nexus\Database\ClickHouse;
 use Nexus\Database\NexusDB;
 
 class BonusRepository extends BaseRepository
@@ -70,11 +71,8 @@ class BonusRepository extends BaseRepository
             ], $user->locale);
             do_log("comment: $comment");
             $this->consumeUserBonus($user, $requireBonus, BonusLogs::BUSINESS_TYPE_BUY_MEDAL, "$comment(medal ID: {$medal->id})");
-            $expireAt = null;
-            if ($medal->duration > 0) {
-                $expireAt = Carbon::now()->addDays($medal->duration)->toDateTimeString();
-            }
-            $user->medals()->attach([$medal->id => ['expire_at' => $expireAt, 'status' => UserMedal::STATUS_NOT_WEARING]]);
+            $medalRep = new MedalRepository();
+            $medalRep->userAttachMedal($user, $medal);
             if ($medal->inventory !== null) {
                 $affectedRows = NexusDB::table('medals')
                     ->where('id', $medal->id)
@@ -116,7 +114,7 @@ class BonusRepository extends BaseRepository
 
             $expireAt = null;
             if ($medal->duration > 0) {
-                $expireAt = Carbon::now()->addDays($medal->duration)->toDateTimeString();
+                $expireAt = Carbon::now()->addDays((int)$medal->duration)->toDateTimeString();
             }
             $msg = [
                 'sender' => 0,
@@ -252,11 +250,11 @@ class BonusRepository extends BaseRepository
 
     }
 
-    public function consumeToBuyTorrent($uid, $torrentId, $channel = 'Web'): bool
+    public function consumeToBuyTorrent($uid, $torrentId, $channel = 'Web'): TorrentBuyLog
     {
         $torrent = Torrent::query()->findOrFail($torrentId, Torrent::$commentFields);
         $requireBonus = $torrent->price;
-        NexusDB::transaction(function () use ($requireBonus, $torrent, $channel, $uid) {
+        return NexusDB::transaction(function () use ($requireBonus, $torrent, $channel, $uid) {
             $userQuery = User::query();
             if ($requireBonus > 0) {
                 $userQuery = $userQuery->lockForUpdate();
@@ -269,7 +267,7 @@ class BonusRepository extends BaseRepository
             ], $buyerLocale);
             do_log("comment: $comment");
             $this->consumeUserBonus($user, $requireBonus, BonusLogs::BUSINESS_TYPE_BUY_TORRENT, $comment);
-            TorrentBuyLog::query()->create([
+            $buyLog = TorrentBuyLog::query()->create([
                 'uid' => $user->id,
                 'torrent_id' => $torrent->id,
                 'price' => $requireBonus,
@@ -314,10 +312,8 @@ class BonusRepository extends BaseRepository
                 ], $buyerLocale),
             ];
             Message::add($buyTorrentSuccessMessage);
+            return $buyLog;
         });
-
-        return true;
-
     }
 
     public function consumeUserBonus($user, $requireBonus, $logBusinessType, $logComment = '', array $userUpdates = [])
@@ -365,6 +361,72 @@ class BonusRepository extends BaseRepository
             do_log("bonusLog: " . nexus_json_encode($bonusLog));
             clear_user_cache($user->id, $user->passkey);
         });
+    }
+
+    public function getCount(string $category = '', int $userId = 0, int $businessType = 0): int
+    {
+        if ($category == BonusLogs::CATEGORY_COMMON) {
+            $query = $this->buildQuery($userId, $businessType);
+            return $query->count();
+        } else if ($category == BonusLogs::CATEGORY_SEEDING) {
+            list($whereStr, $binds) = $this->buildWhereStrAndBinds($userId, $businessType);
+            return ClickHouse::count("bonus_logs", $whereStr, $binds);
+        }
+        throw new \InvalidArgumentException("Invalid category: $category");
+    }
+
+    public function getList(string $category = '', int $userId = 0, int $businessType = 0, int $page = 1, int $perPage = 50)
+    {
+        if ($category == BonusLogs::CATEGORY_COMMON) {
+            $query = $this->buildQuery($userId, $businessType);
+            return $query->orderBy("id", "desc")->forPage($page, $perPage)->get();
+        } else if ($category == BonusLogs::CATEGORY_SEEDING) {
+            list($whereStr, $binds) = $this->buildWhereStrAndBinds($userId, $businessType);
+            $offset = ($page - 1) * $perPage;
+            $rows = ClickHouse::list("select * from bonus_logs $whereStr order by created_at desc limit $offset, $perPage", $binds);
+            $result = [];
+            $id = 1;//fake id
+            foreach ($rows as $row) {
+                $record = new BonusLogs($row);
+                $record->id = $id;
+                $result[] = $record;
+                $id++;
+            }
+            return $result;
+        }
+        throw new \InvalidArgumentException("Invalid category: $category");
+    }
+
+    private function buildWhereStrAndBinds(int $userId = 0,  int $businessType = 0)
+    {
+        $whereArr = [];
+        $binds = [];
+        if ($userId > 0) {
+            $whereArr[] = "uid = :uid";
+            $binds['uid'] = $userId;
+        }
+        if ($businessType > 0) {
+            $whereArr[] = "business_type = :business_type";
+            $binds["business_type"] = $businessType;
+        }
+        if (empty($whereArr)) {
+            $whereStr = "";
+        } else {
+            $whereStr = sprintf("where %s", implode(' AND ', $whereArr));
+        }
+        return [$whereStr, $binds];
+    }
+
+    private function buildQuery(int $userId = 0,  int $businessType = 0): Builder
+    {
+        $query = BonusLogs::query();
+        if ($userId > 0) {
+            $query->where('uid', $userId);
+        }
+        if ($businessType > 0) {
+            $query->where('business_type', $businessType);
+        }
+        return $query;
     }
 
 

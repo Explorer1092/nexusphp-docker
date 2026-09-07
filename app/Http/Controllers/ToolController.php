@@ -2,10 +2,14 @@
 
 namespace App\Http\Controllers;
 
+use App\Jobs\SettleClaim;
 use App\Models\PluginStore;
+use App\Models\Setting;
+use App\Repositories\TokenRepository;
 use App\Repositories\ToolRepository;
 use App\Repositories\UploadRepository;
 use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\JsonResource;
 use Illuminate\Support\Facades\Auth;
 use Symfony\Component\Process\Process;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -28,12 +32,9 @@ class ToolController extends Controller
         return $this->success($result);
     }
 
-
-    public function test(Request $request)
+    public function error(Request $request)
     {
-        $rep = new UploadRepository();
-        $result = $rep->listSections();
-        return $result;
+        return view('error', ['error' => $request->query('error')]);
     }
 
 }

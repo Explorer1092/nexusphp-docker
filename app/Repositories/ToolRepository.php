@@ -12,6 +12,7 @@ use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Nexus\Database\NexusDB;
@@ -27,12 +28,14 @@ class ToolRepository extends BaseRepository
 {
     const BACKUP_EXCLUDES = ['vendor', 'node_modules', '.git', '.idea', '.settings', '.DS_Store', '.github'];
 
+    const BACKUP_RETENTION_COUNT_DEFAULT = 10;
+
     public function backupWeb($method = null, $transfer = false): array
     {
         $webRoot = base_path();
         $dirName = basename($webRoot);
         $excludes = self::BACKUP_EXCLUDES;
-        $baseFilename = sprintf('%s/%s.web.%s', sys_get_temp_dir(), $dirName, date('Ymd.His'));
+        $baseFilename = sprintf('%s/%s.web.%s', $this->getBackupExportPath(), $dirName, date('Ymd.His'));
         if (command_exists('tar') && ($method === 'tar' || $method === null)) {
             $filename = $baseFilename . ".tar.gz";
             $command = "tar";
@@ -89,11 +92,18 @@ class ToolRepository extends BaseRepository
     {
         $connectionName = config('database.default');
         $config = config("database.connections.$connectionName");
-        $filename = sprintf('%s/%s.database.%s.sql', sys_get_temp_dir(), basename(base_path()), date('Ymd.His'));
-        $command = sprintf(
-            'mysqldump --user=%s --password=%s --host=%s --port=%s --single-transaction --no-create-db %s >> %s 2>&1',
-            $config['username'], $config['password'], $config['host'], $config['port'], $config['database'], $filename,
-        );
+        $filename = sprintf('%s/%s.database.%s.sql', $this->getBackupExportPath(), basename(base_path()), date('Ymd.His'));
+        if (command_exists("mariadb-dump")) {
+            $command = sprintf(
+                'mariadb-dump --user=%s --password=%s --host=%s --port=%s --single-transaction --no-create-db --no-tablespaces --ssl=0 %s >> %s 2>&1',
+                $config['username'], $config['password'], $config['host'], $config['port'], $config['database'], $filename,
+            );
+        } else {
+            $command = sprintf(
+                'mysqldump --user=%s --password=%s --host=%s --port=%s --single-transaction --no-create-db --no-tablespaces --ssl-mode=DISABLED %s >> %s 2>&1',
+                $config['username'], $config['password'], $config['host'], $config['port'], $config['database'], $filename,
+            );
+        }
         $result = exec($command, $output, $result_code);
         do_log(sprintf(
             "command: %s, output: %s, result_code: %s, result: %s, filename: %s",
@@ -115,7 +125,7 @@ class ToolRepository extends BaseRepository
         if ($backupDatabase['result_code'] != 0) {
             throw new \RuntimeException("backup database fail: " . json_encode($backupDatabase));
         }
-        $baseFilename = sprintf('%s/%s.%s', sys_get_temp_dir(), basename(base_path()), date('Ymd.His'));
+        $baseFilename = sprintf('%s/%s.%s', $this->getBackupExportPath(), basename(base_path()), date('Ymd.His'));
         if (command_exists('tar') && ($method === 'tar' || $method === null)) {
             $filename = $baseFilename . ".tar.gz";
             $command = sprintf(
@@ -143,10 +153,26 @@ class ToolRepository extends BaseRepository
             $result_code = 0;
             do_log("No tar command, use zip.");
         }
+        File::delete($backupWeb['filename']);
+        File::delete($backupDatabase['filename']);
         if (!$transfer) {
             return compact('result_code', 'filename');
         }
         return $this->transfer($filename, $result_code);
+    }
+
+    private function getBackupExportPath(): string
+    {
+        $path = Setting::getBackupExportPath();
+        if (empty($path)) {
+            $path = self::getBackupExportPathDefault();
+        }
+        return $path;
+    }
+
+    public static function getBackupExportPathDefault(): string
+    {
+        return sys_get_temp_dir() . "/nexusphp_backup";
     }
 
     /**
@@ -192,6 +218,7 @@ class ToolRepository extends BaseRepository
         $transferResult = $this->transfer($backupResult['filename'], $backupResult['result_code'], $setting);
         $backupResult['transfer_result'] = $transferResult;
         do_log("[BACKUP_ALL_DONE]: " . json_encode($backupResult));
+        $this->cleanupBackupFiles(basename($backupResult['filename']));
         return $backupResult;
     }
 
@@ -311,6 +338,34 @@ class ToolRepository extends BaseRepository
         }
     }
 
+    private function cleanupBackupFiles($basename): void
+    {
+        $nameParts = explode('.', $basename);
+        $firstPart = $nameParts[0];
+        $lastPart = $nameParts[count($nameParts) - 1];
+        $retentionCount = Setting::getBackupRetentionCount();
+        if ($retentionCount <= 0) {
+            $retentionCount = self::BACKUP_RETENTION_COUNT_DEFAULT;
+        }
+        $path = self::getBackupExportPath();
+        $allFiles = collect(File::allFiles($path))->filter(function (\Symfony\Component\Finder\SplFileInfo $file) use ($firstPart, $lastPart) {
+             $name = basename($file->getRealPath());
+             return str_starts_with($name, $firstPart) && str_ends_with($name, $lastPart);
+        });
+        // 按创建时间降序排序
+        $allFiles = $allFiles->sortByDesc(fn (\Symfony\Component\Finder\SplFileInfo $file) => $file->getCTime());
+        $filesToDelete = $allFiles->slice($retentionCount);
+        do_log(sprintf(
+            "retentionCount: %s, path: %s, fileCount: %s",
+            $retentionCount, $path, $allFiles->count()
+        ));
+        foreach ($filesToDelete as $file) {
+            $realPath = $file->getRealPath();
+            File::delete($realPath);
+            do_log(sprintf("delete backup file: %s", $realPath));
+        }
+    }
+
     /**
      * @param $to
      * @param $subject
@@ -346,7 +401,8 @@ class ToolRepository extends BaseRepository
             ->from(new Address(Setting::get('main.SITEEMAIL'), Setting::get('basic.SITENAME')))
             ->to($to)
             ->subject($subject)
-            ->html($body)
+            ->text($body)
+            ->html(nl2br($body))
         ;
 
         // Send the message
@@ -455,8 +511,9 @@ class ToolRepository extends BaseRepository
         $stickyPromotionExists = NexusDB::hasTable($stickyPromotionParticipatorsTable);
         $claimTableExists = NexusDB::hasTable($claimTable);
         $hitAndRunTableExists = NexusDB::hasTable($hitAndRunTable);
+        $idsField = NexusDB::groupConcatField('id');
         while (true) {
-            $snatchRes = NexusDB::select("select userid, torrentid, group_concat(id) as ids from snatched group by userid, torrentid having(count(*)) > 1 limit $size");
+            $snatchRes = NexusDB::select("select userid, torrentid, $idsField as ids from snatched group by userid, torrentid having(count(*)) > 1 limit $size");
             if (empty($snatchRes)) {
                 break;
             }
@@ -486,8 +543,9 @@ class ToolRepository extends BaseRepository
     public function removeDuplicatePeer()
     {
         $size = 2000;
+        $idsField = NexusDB::groupConcatField('id');
         while (true) {
-            $results = NexusDB::select("select torrent, userid, group_concat(id) as ids from peers group by torrent, peer_id, userid having(count(*)) > 1 limit $size");
+            $results = NexusDB::select("select torrent, userid, $idsField as ids from peers group by torrent, peer_id, userid having(count(*)) > 1 limit $size");
             if (empty($results)) {
                 do_log("[DELETE_DUPLICATED_PEERS], no data: ". last_query());
                 break;

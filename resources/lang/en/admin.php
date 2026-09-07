@@ -42,6 +42,13 @@ return [
         'oauth_access_token' => 'Access tokens',
         'oauth_auth_code' => 'Auth codes',
         'oauth_refresh_token' => 'Refresh tokens',
+        'token' => 'Access tokens',
+        'oauth_provider' => 'Authorization provider',
+        'queue_monitor' => 'Queue monitor',
+        'user_modify_logs' => 'User modify logs',
+        'message_templates' => 'Message templates',
+        'tracker_url' => 'Tracker URL',
+        'activity_logs' => 'Activity Logs',
     ],
     'resources' => [
         'agent_allow' => [
@@ -101,6 +108,7 @@ return [
         ],
         'exam' => [
             'index_duplicate' => 'Index：:index duplicate !',
+            'index_seed_time_average_require_value_invalid' => 'The required average seeding time :index_seed_time_average_require_value is greater than the total exam duration :duration. Please modify it!'
         ],
         'hit_and_run' => [
             'bulk_action_pardon' => 'Bulk pardon',

@@ -42,6 +42,15 @@ return [
         'oauth_access_token' => '訪問令牌',
         'oauth_auth_code' => '授權碼',
         'oauth_refresh_token' => '刷新令牌',
+        'token' => '訪問令牌',
+        'oauth_provider' => '身份驗證',
+        'queue_monitor' => '隊列監控',
+        'user_modify_logs' => '修改記錄',
+        'message_templates' => '消息模板',
+        'tracker_url' => 'Tracker URL',
+        'announce_logs' => '匯報記錄',
+        'announce_monitor' => '匯報監控',
+        'activity_logs' => '操作日志',
     ],
     'resources' => [
         'agent_allow' => [
@@ -101,6 +110,7 @@ return [
         ],
         'exam' => [
             'index_duplicate' => '指標：:index 重復！',
+            'index_seed_time_average_require_value_invalid' => '指標平均做種時間的要求量：:index_seed_time_average_require_value 大於整個考核時長：:duration，請修改！'
         ],
         'hit_and_run' => [
             'bulk_action_pardon' => '批量免罪',

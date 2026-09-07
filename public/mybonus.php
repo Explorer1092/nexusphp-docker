@@ -2,7 +2,7 @@
 require_once('../include/bittorrent.php');
 dbconn();
 require_once(get_langfile_path());
-require(get_langfile_path("",true));
+//require(get_langfile_path("",true));
 loggedinorreturn();
 parked();
 
@@ -317,7 +317,7 @@ if (isset($do)) {
 	elseif ($do == "vipfalse")
 	$msg =  $lang_mybonus['text_no_permission'];
 	elseif ($do == "title")
-	$msg = $lang_mybonus['text_success_custom_title'];
+	$msg = sprintf($lang_mybonus['text_success_custom_title'], $CURUSER['title']);
 	elseif ($do == "transfer")
 	$msg =  $lang_mybonus['text_success_gift'];
 	elseif ($do == "noad")
@@ -369,6 +369,7 @@ for ($i=0; $i < count($allBonus); $i++)
     ) {
         continue;
     }
+    $bonusarrray['points'] = floatval($bonusarray['points']);
 
 	print("<tr>");
 	print("<form action=\"?action=exchange\" method=\"post\">");
@@ -486,6 +487,10 @@ print("<ul>");
 if ($perseeding_bonus > 0)
 	print("<li>".$perseeding_bonus.$lang_mybonus['text_point'].add_s($perseeding_bonus).$lang_mybonus['text_for_seeding_torrent'].$maxseeding_bonus.$lang_mybonus['text_torrent'].add_s($maxseeding_bonus).")</li>");
 print("<li>".$lang_mybonus['text_bonus_formula_one'].$tzero_bonus.$lang_mybonus['text_bonus_formula_two'].$nzero_bonus.$lang_mybonus['text_bonus_formula_wi'].get_setting('bonus.zero_bonus_factor').$lang_mybonus['text_bonus_formula_three'].$bzero_bonus.$lang_mybonus['text_bonus_formula_four'].$l_bonus.$lang_mybonus['text_bonus_formula_five']."</li>");
+$minSize = get_setting('bonus.min_size');
+if ($minSize > 0) {
+    print("<li>".sprintf($lang_mybonus['text_bonus_mini_size'], mksize($minSize))."</li>");
+}
 if ($donortimes_bonus)
 	print("<li>".$lang_mybonus['text_donors_always_get'].$donortimes_bonus.$lang_mybonus['text_times_of_bonus']."</li>");
 
@@ -581,7 +586,7 @@ if ($action == "exchange") {
 	$userid = $CURUSER['id'];
 	$art = $bonusarray['art'];
 
-	$bonuscomment = $CURUSER['bonuscomment'];
+//	$bonuscomment = $CURUSER['bonuscomment'];
 	$seedbonus=$CURUSER['seedbonus']-$points;
 
 	if($CURUSER['seedbonus'] >= $points) {
@@ -616,7 +621,7 @@ if ($action == "exchange") {
 //			$bonuscomment = date("Y-m-d") . " - " .$points. " Points for upload bonus.\n " .$bonuscomment;
 //			sql_query("UPDATE users SET uploaded = ".sqlesc($up).", seedbonus = seedbonus - $points, bonuscomment = ".sqlesc($bonuscomment)." WHERE id = ".sqlesc($userid)) or sqlerr(__FILE__, __LINE__);
             $bonusRep->consumeUserBonus($CURUSER['id'], $points, \App\Models\BonusLogs::BUSINESS_TYPE_EXCHANGE_UPLOAD, $points. " Points for uploaded.", ['uploaded' => $up]);
-			nexus_redirect("" . get_protocol_prefix() . "$BASEURL/mybonus.php?do=upload");
+			nexus_redirect('mybonus.php?do=upload');
 			}
 		}
         if($art == "traffic_downloaded") {
@@ -627,7 +632,7 @@ if ($action == "exchange") {
                 $CURUSER['id'], $points, $CURUSER['downloaded'], $down
             ));
             $bonusRep->consumeUserBonus($CURUSER['id'], $points, \App\Models\BonusLogs::BUSINESS_TYPE_EXCHANGE_DOWNLOAD, $points. " Points for downloaded.", ['downloaded' => $down]);
-            nexus_redirect("" . get_protocol_prefix() . "$BASEURL/mybonus.php?do=download");
+            nexus_redirect('mybonus.php?do=download');
         }
 		//=== trade for one month VIP status ***note "SET class = '10'" change "10" to whatever your VIP class number is
 		elseif($art == "class") {
@@ -640,7 +645,7 @@ if ($action == "exchange") {
 //			$bonuscomment = date("Y-m-d") . " - " .$points. " Points for 1 month VIP Status.\n " .htmlspecialchars($bonuscomment);
 //			sql_query("UPDATE users SET class = '".UC_VIP."', vip_added = 'yes', vip_until = ".sqlesc($vip_until).", seedbonus = seedbonus - $points, bonuscomment=".sqlesc($bonuscomment)." WHERE id = ".sqlesc($userid)) or sqlerr(__FILE__, __LINE__);
             $bonusRep->consumeUserBonus($CURUSER['id'], $points, \App\Models\BonusLogs::BUSINESS_TYPE_BUY_VIP, $points. " Points for 1 month VIP Status.", ['class' => UC_VIP, 'vip_added' => 'yes', 'vip_until' => $vip_until]);
-			nexus_redirect("" . get_protocol_prefix() . "$BASEURL/mybonus.php?do=vip");
+			nexus_redirect('mybonus.php?do=vip');
 		}
 		//=== trade for invites
 		elseif($art == "invite") {
@@ -651,7 +656,7 @@ if ($action == "exchange") {
 //			$bonuscomment = date("Y-m-d") . " - " .$points. " Points for invites.\n " .htmlspecialchars($bonuscomment);
 //			sql_query("UPDATE users SET invites = ".sqlesc($inv).", seedbonus = seedbonus - $points, bonuscomment=".sqlesc($bonuscomment)." WHERE id = ".sqlesc($userid)) or sqlerr(__FILE__, __LINE__);
             $bonusRep->consumeUserBonus($CURUSER['id'], $points, \App\Models\BonusLogs::BUSINESS_TYPE_EXCHANGE_INVITE, $points. " Points for invites.", ['invites' => $inv, ]);
-            nexus_redirect("" . get_protocol_prefix() . "$BASEURL/mybonus.php?do=invite");
+            nexus_redirect('mybonus.php?do=invite');
 		}
         //=== temporary invite
         elseif($art == "tmp_invite") {
@@ -662,7 +667,7 @@ if ($action == "exchange") {
 //			$bonuscomment = date("Y-m-d") . " - " .$points. " Points for invites.\n " .htmlspecialchars($bonuscomment);
 //			sql_query("UPDATE users SET invites = ".sqlesc($inv).", seedbonus = seedbonus - $points, bonuscomment=".sqlesc($bonuscomment)." WHERE id = ".sqlesc($userid)) or sqlerr(__FILE__, __LINE__);
             $bonusRep->consumeToBuyTemporaryInvite($CURUSER['id']);
-            nexus_redirect("" . get_protocol_prefix() . "$BASEURL/mybonus.php?do=tmp_invite");
+            nexus_redirect('mybonus.php?do=tmp_invite');
         }
 		//=== trade for special title
 		/**** the $words array are words that you DO NOT want the user to have... use to filter "bad words" & user class...
@@ -676,7 +681,7 @@ if ($action == "exchange") {
 //			$bonuscomment = date("Y-m-d") . " - " .$points. " Points for custom title. Old title is ".htmlspecialchars(trim($CURUSER["title"]))." and new title is $title\n " .htmlspecialchars($bonuscomment);
 //			sql_query("UPDATE users SET title = ".sqlesc($title).", seedbonus = seedbonus - $points, bonuscomment = ".sqlesc($bonuscomment)." WHERE id = ".sqlesc($userid)) or sqlerr(__FILE__, __LINE__);
             $bonusRep->consumeUserBonus($CURUSER['id'], $points, \App\Models\BonusLogs::BUSINESS_TYPE_CUSTOM_TITLE, $points. " Points for custom title. Old title is ".htmlspecialchars(trim($CURUSER["title"]))." and new title is $title.", ['title' => $title, ]);
-			nexus_redirect("" . get_protocol_prefix() . "$BASEURL/mybonus.php?do=title");
+			nexus_redirect('mybonus.php?do=title');
 		}
 		elseif($art == "noad" && $enablead_advertisement == 'yes' && $enablebonusnoad_advertisement == 'yes') {
 			if (($enablenoad_advertisement == 'yes' && get_user_class() >= $noad_advertisement) || strtotime($CURUSER['noaduntil']) >= TIMENOW || get_user_class() < $bonusnoad_advertisement)
@@ -686,7 +691,7 @@ if ($action == "exchange") {
 //				$bonuscomment = date("Y-m-d") . " - " .$points. " Points for ".$bonusnoadtime_advertisement." days without ads.\n " .htmlspecialchars($bonuscomment);
 //				sql_query("UPDATE users SET noad='yes', noaduntil='".$noaduntil."', seedbonus = seedbonus - $points, bonuscomment = ".sqlesc($bonuscomment)." WHERE id=".sqlesc($userid));
                 $bonusRep->consumeUserBonus($CURUSER['id'], $points, \App\Models\BonusLogs::BUSINESS_TYPE_NO_AD, $points. " Points for ".$bonusnoadtime_advertisement." days without ads.", ['noad' => 'yes', 'noaduntil' => $noaduntil]);
-				nexus_redirect("" . get_protocol_prefix() . "$BASEURL/mybonus.php?do=noad");
+				nexus_redirect('mybonus.php?do=noad');
 			}
 		}
 		elseif($art == 'gift_2') // charity giving
@@ -712,7 +717,7 @@ if ($action == "exchange") {
                     $bonusRep->consumeUserBonus($CURUSER['id'], $points, \App\Models\BonusLogs::BUSINESS_TYPE_GIFT_TO_LOW_SHARE_RATIO, $points. " Points as charity to users with ratio below ".htmlspecialchars(trim($ratiocharity)).".", ['charity' => \Nexus\Database\NexusDB::raw("charity + $points"), ]);
 					$charityPerUser = $points/$charityReceiverCount;
 					sql_query("UPDATE users SET seedbonus = seedbonus + $charityPerUser WHERE enabled='yes' AND 10737418240 < downloaded AND $ratiocharity > uploaded/downloaded") or sqlerr(__FILE__, __LINE__);
-					nexus_redirect("" . get_protocol_prefix() . "$BASEURL/mybonus.php?do=charity");
+					nexus_redirect('mybonus.php?do=charity');
 				}
 				else
 				{
@@ -768,15 +773,23 @@ if ($action == "exchange") {
                 \App\Models\BonusLogs::add($useridgift, $userseedbonus, $aftertaxpoint, $userseedbonus + $aftertaxpoint, " + " .$points2receiver. " Points (after tax) as a gift from ".($CURUSER["username"]), \App\Models\BonusLogs::BUSINESS_TYPE_RECEIVE_GIFT);
 
 				//===send message
-				$subject = sqlesc($lang_mybonus_target[get_user_lang($useridgift)]['msg_someone_loves_you']);
+                $locale = get_user_locale($useridgift);
+				$subject = nexus_trans("bonus.msg_someone_loves_you", [], $locale);
 				$added = sqlesc(date("Y-m-d H:i:s"));
-				$msg = $lang_mybonus_target[get_user_lang($useridgift)]['msg_you_have_been_given'].$points2.$lang_mybonus_target[get_user_lang($useridgift)]['msg_after_tax'].$points2receiver.$lang_mybonus_target[get_user_lang($useridgift)]['msg_karma_points_by'].$CURUSER['username'];
+				$msg = nexus_trans("bonus.msg_you_have_been_given", [], $locale).$points2.nexus_trans("bonus.msg_after_tax", [], $locale).$points2receiver.nexus_trans("bonus.msg_karma_points_by", [], $locale).$CURUSER['username'];
 				if ($message)
-					$msg .= "\n".$lang_mybonus_target[get_user_lang($useridgift)]['msg_personal_message_from'].$CURUSER['username'].$lang_mybonus_target[get_user_lang($useridgift)]['msg_colon'].$message;
-				$msg = sqlesc($msg);
-				sql_query("INSERT INTO messages (sender, subject, receiver, msg, added) VALUES(0, $subject, $useridgift, $msg, $added)") or sqlerr(__FILE__, __LINE__);
+				{
+					$msg .= "\n".nexus_trans("bonus.msg_personal_message_from", [], $locale).$CURUSER['username'].nexus_trans("bonus.msg_colon", [], $locale).$message;
+				}
+				\App\Models\Message::add([
+					'sender' => 0,
+					'subject' => $subject,
+					'added' => now(),
+					'msg' => $msg,
+					'receiver' => $useridgift,
+				]);
 				$usernamegift = unesc($_POST["username"]);
-                nexus_redirect("" . get_protocol_prefix() . "$BASEURL/mybonus.php?do=transfer");
+                nexus_redirect('mybonus.php?do=transfer');
 			}
 			else{
 				print("<table width=\"97%\"><tr><td class=\"colhead\" align=\"left\" colspan=\"2\"><h1>".$lang_mybonus['text_oups']."</h1></td></tr>");
@@ -787,22 +800,22 @@ if ($action == "exchange") {
 		        stderr("Error","Invalid H&R ID: " . ($_POST['hr_id'] ?? ''), false, false);
             }
             $bonusRep->consumeToCancelHitAndRun($userid, $_POST['hr_id']);
-            nexus_redirect("" . get_protocol_prefix() . "$BASEURL/mybonus.php?do=cancel_hr");
+            nexus_redirect('mybonus.php?do=cancel_hr');
 //        } elseif ($art == 'buy_medal') {
 //            if (empty($_POST['medal_id'])) {
 //                stderr("Error","Invalid Medal ID: " . ($_POST['medal_id'] ?? ''), false, false);
 //            }
 //            $bonusRep->consumeToBuyMedal($userid, $_POST['medal_id']);
-//            nexus_redirect("" . get_protocol_prefix() . "$BASEURL/mybonus.php?do=buy_medal");
+//            nexus_redirect('mybonus.php?do=buy_medal');
         } elseif ($art == 'attendance_card') {
             $bonusRep->consumeToBuyAttendanceCard($userid);
-            nexus_redirect("" . get_protocol_prefix() . "$BASEURL/mybonus.php?do=attendance_card");
+            nexus_redirect('mybonus.php?do=attendance_card');
         } elseif ($art == 'rainbow_id') {
             $bonusRep->consumeToBuyRainbowId($userid);
-            nexus_redirect("" . get_protocol_prefix() . "$BASEURL/mybonus.php?do=rainbow_id");
+            nexus_redirect('mybonus.php?do=rainbow_id');
         } elseif ($art == 'change_username_card') {
             $bonusRep->consumeToBuyChangeUsernameCard($userid);
-            nexus_redirect("" . get_protocol_prefix() . "$BASEURL/mybonus.php?do=change_username_card");
+            nexus_redirect('mybonus.php?do=change_username_card');
         }
 	}
 }

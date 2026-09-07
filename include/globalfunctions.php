@@ -3,21 +3,14 @@
 function get_global_sp_state()
 {
 	static $global_promotion_state;
-	$cacheKey = \App\Models\Setting::TORRENT_GLOBAL_STATE_CACHE_KEY;
-	if (!$global_promotion_state) {
-        $row = \Nexus\Database\NexusDB::remember($cacheKey, 600, function () use ($cacheKey) {
-            return \Nexus\Database\NexusDB::getOne('torrents_state', 1);
-        });
-        if (is_array($row) && isset($row['deadline']) && $row['deadline'] < date('Y-m-d H:i:s')) {
-            //expired
-            $global_promotion_state = \App\Models\Torrent::PROMOTION_NORMAL;
-        } elseif (is_array($row) && isset($row['begin']) && $row['begin'] > date('Y-m-d H:i:s')) {
-            //Not begin
-            $global_promotion_state = \App\Models\Torrent::PROMOTION_NORMAL;
-        } elseif (is_array($row)) {
-            $global_promotion_state = $row["global_sp_state"];
+	if (is_null($global_promotion_state)) {
+        $timeline = \App\Models\TorrentState::resolveTimeline();
+        $current = $timeline['current'] ?? null;
+
+        if (is_array($current) && isset($current['global_sp_state'])) {
+            $global_promotion_state = $current['global_sp_state'];
         } else {
-            $global_promotion_state = $row;
+            $global_promotion_state = \App\Models\Torrent::PROMOTION_NORMAL;
         }
 	}
 	return $global_promotion_state;
@@ -82,7 +75,7 @@ function sql_query($query)
 	$end = microtime(true);
 	$query_name[] = [
 		'query' => $query,
-		'time' => sprintf('%.3f ms', ($end - $begin) * 1000),
+		'time' => sprintf('%.2f ms', ($end - $begin) * 1000),
 	];
 	return $result;
 }
@@ -96,6 +89,10 @@ function sqlesc($value) {
 }
 
 function hash_pad($hash) {
+    if (is_resource($hash)) {
+        rewind($hash);
+        $hash = stream_get_contents($hash);
+    }
     return str_pad($hash, 20);
 }
 
@@ -103,7 +100,14 @@ function hash_where($name, $hash) {
 //	$shhash = preg_replace('/ *$/s', "", $hash);
 //	return "($name = " . sqlesc($hash) . " OR $name = " . sqlesc($shhash) . ")";
 //	return sprintf("$name in (%s, %s)", sqlesc($hash), sqlesc($shhash));
-    return "$name = " . sqlesc($hash);
+    if (\Nexus\Database\NexusDB::isMysql()) {
+        return "$name = " . sqlesc($hash);
+    } elseif (Nexus\Database\NexusDB::isPgsql()) {
+        return "$name = decode(bin2hex('$hash'), 'hex')";
+    } else {
+        throw new \RuntimeException("Not supported database");
+    }
+
 }
 
 //no need any more...
@@ -139,7 +143,8 @@ if (function_exists('get_magic_quotes_gpc') && get_magic_quotes_gpc())
 function get_langfolder_list()
 {
 	//do not access db for speed up, or for flexibility
-	return array("en", "chs", "cht", "ko", "ja");
+//	return array("en", "chs", "cht", "ko", "ja");
+    return \App\Models\Language::listAvailable();
 }
 
 function printLine($line, $exist = false)
@@ -210,7 +215,7 @@ function do_log($log, $level = 'info', $echo = false)
     $backtrace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 2);
     $content = sprintf(
         "[%s] [%s] [%s] [%s] [%s] [%s] %s.%s %s:%s %s%s%s %s%s",
-        date('Y-m-d H:i:s'),
+        getDtMillis(true),
         nexus() ? nexus()->getRequestId() : 'NO_REQUEST_ID',
         nexus() ? nexus()->getLogSequence() : 0,
         sprintf('%.3f', microtime(true) - (nexus() ? nexus()->getStartTimestamp() : 0)),
@@ -235,22 +240,43 @@ function do_log($log, $level = 'info', $echo = false)
     }
 }
 
+function getDtMillis($withTimeZone = false): string {
+    $dt = DateTime::createFromFormat('U.u', sprintf('%.6f', microtime(true)));
+    $dt->setTimezone(new DateTimeZone(nexus_env('TIMEZONE', 'UTC')));
+    $format = $withTimeZone ? 'Y-m-d\TH:i:s.vP' : 'Y-m-d H:i:s.v';
+    return $dt->format($format);
+}
+
+function getDtMicro($withTimeZone = false): string {
+    $dt = DateTime::createFromFormat('U.u', sprintf('%.6f', microtime(true)));
+    $dt->setTimezone(new DateTimeZone(nexus_env('TIMEZONE', 'UTC')));
+    $format = $withTimeZone ? 'Y-m-d\TH:i:s.uP' : 'Y-m-d H:i:s.u';
+    return $dt->format($format);
+}
+
 function getLogFile($append = '')
 {
     static $logFiles = [];
     if (isset($logFiles[$append])) {
         return $logFiles[$append];
     }
-    $config = nexus_config('nexus');
+    $std = ["php://stdout", "php://stderr"];
+    $logFileFromDotEnv = nexus_env('LOG_FILE');
+    if ($logFileFromDotEnv && in_array($logFileFromDotEnv, $std)) {
+        return $logFiles[$append] = $logFileFromDotEnv;
+    }
     $path = getenv('NEXUS_LOG_DIR', true);
+    if (in_array($path, $std)) {
+        return $logFiles[$append] = $path;
+    }
     $fromEnv = true;
     if ($path === false) {
         $fromEnv = false;
         $path = sys_get_temp_dir();
     }
     $logFile = rtrim($path, '/') . '/nexus.log';
-    if (!$fromEnv && !empty($config['log_file'])) {
-        $logFile = $config['log_file'];
+    if (!$fromEnv && $logFileFromDotEnv) {
+        $logFile = $logFileFromDotEnv;
     }
     $lastDotPos = strrpos($logFile, '.');
     if ($lastDotPos !== false) {
@@ -268,8 +294,8 @@ function getLogFile($append = '')
         $scriptUserInfo = posix_getpwuid(posix_getuid());
         $name .= sprintf("-cli-%s", $scriptUserInfo['name']);
     }
-    $logFile = sprintf('%s-%s%s', $name, date('Y-m-d'), $suffix);
-    return $logFiles[$append] = $logFile;
+    $name .= "-" . date('Y-m-d');
+    return $logFiles[$append] = $name . $suffix;
 
 }
 
@@ -285,6 +311,8 @@ function nexus_config($key, $default = null)
         $files = [
             ROOT_PATH . 'config/nexus.php',
             ROOT_PATH . 'config/emoji.php',
+            ROOT_PATH . 'config/captcha.php',
+            ROOT_PATH . 'config/clickhouse.php',
         ];
         foreach ($files as $file) {
             $basename = basename($file);
@@ -485,7 +513,7 @@ function isHttps(): bool
 }
 
 
-function getSchemeAndHttpHost(bool $fromConfig = false)
+function getSchemeAndHttpHost(bool $fromConfig = false): string
 {
     if (isRunningInConsole() || $fromConfig) {
         $host = get_setting("basic.BASEURL");
@@ -500,12 +528,14 @@ function getSchemeAndHttpHost(bool $fromConfig = false)
 function getBaseUrl()
 {
     $url = getSchemeAndHttpHost();
-    $requestUri = $_SERVER['REQUEST_URI'];
-    $pos = strpos($requestUri, '?');
-    if ($pos !== false) {
-        $url .= substr($requestUri, 0, $pos);
-    } else {
-        $url .= $requestUri;
+    if (!isRunningInConsole()) {
+        $requestUri = $_SERVER['REQUEST_URI'];
+        $pos = strpos($requestUri, '?');
+        if ($pos !== false) {
+            $url .= substr($requestUri, 0, $pos);
+        } else {
+            $url .= $requestUri;
+        }
     }
     return trim($url, '/');
 }
@@ -518,6 +548,7 @@ function nexus_json_encode($data)
 
 function api(...$args)
 {
+    do_log("api begin");
     if (func_num_args() < 3) {
         //参数少于3个时，默认为错误状态。
         $ret = -1;
@@ -528,13 +559,11 @@ function api(...$args)
         $msg = $args[1];
         $data = $args[2];
     }
-    if ($data instanceof \Illuminate\Http\Resources\Json\ResourceCollection || $data instanceof \Illuminate\Http\Resources\Json\JsonResource) {
+    if ($data instanceof \Illuminate\Http\Resources\Json\JsonResource) {
         $data = $data->response()->getData(true);
-        if (isset($data['data']) && count($data) == 1) {
-            //单纯的集合，无分页等其数据
-            $data = $data['data'];
-        }
     }
+    do_log("api after prepare data");
+//    dd($data);
     $time = (float)number_format(microtime(true) - nexus()->getStartTimestamp(), 3);
     $count = null;
     $resultKey = 'ret';
@@ -562,7 +591,10 @@ function api(...$args)
         $results['recordsTotal'] = $count;
         $results['recordsFiltered'] = $count;
     }
-
+    if (!IN_NEXUS && config('app.debug')) {
+        $results['queries'] = last_query(true);
+    }
+    do_log("api end");
     return $results;
 }
 
@@ -578,6 +610,7 @@ function success(...$args)
         $msg = $args[0];
         $data = $args[1];
     }
+    do_log("success before api");
     return api($ret, $msg, $data);
 }
 
@@ -596,41 +629,38 @@ function fail(...$args)
     return api($ret, $msg, $data);
 }
 
-function last_query($all = false)
+function last_query($all = false, $format = 'json')
 {
-    static $connection, $pdo;
+    static $connection;
     if (is_null($connection)) {
+        $connectionName = \Nexus\Database\NexusDB::getConnectionName();
         if (IN_NEXUS) {
-            $connection = \Illuminate\Database\Capsule\Manager::connection(\Nexus\Database\NexusDB::ELOQUENT_CONNECTION_NAME);
+            $connection = \Illuminate\Database\Capsule\Manager::connection($connectionName);
         } else {
-            $connection = \Illuminate\Support\Facades\DB::connection(config('database.default'));
+            $connection = \Illuminate\Support\Facades\DB::connection($connectionName);
         }
-        $pdo = $connection->getPdo();
     }
-    $queries = $connection->getQueryLog();
-    if (!$all) {
-        $queries = [last($queries)];
+    if ($all === 'COUNT') {
+        return count($connection->getQueryLog());
     }
-    $queryFormatted = [];
-    foreach ($queries as $query) {
-        $sqlWithPlaceholders = str_replace(['%', '?'], ['%%', '%s'], $query['query']);
-        $bindings = $query['bindings'];
-        $realSql = $sqlWithPlaceholders;
-        if (count($bindings) > 0) {
-            $realSql = vsprintf($sqlWithPlaceholders, array_map([$pdo, 'quote'], $bindings));
-        }
-        $queryFormatted[] = $realSql;
-    }
+    $queries = $connection->getRawQueryLog();
     if ($all) {
-        return nexus_json_encode($queryFormatted);
+        return $queries;
     }
-    return $queryFormatted[0];
+    if (empty($queries)) {
+        return '';
+    }
+    $last = last($queries);
+    if ($format === 'json') {
+        return nexus_json_encode($last);
+    }
+    return $last;
 }
 
 function format_datetime($datetime, $format = 'Y-m-d H:i')
 {
     if (empty($datetime)) {
-        return '';
+        return null;
     }
     try {
         $carbonTime = \Carbon\Carbon::parse($datetime);
@@ -661,8 +691,9 @@ function command_exists($command): bool
     return !(trim(exec("command -v $command")) == '');
 }
 
-function get_tracker_schema_and_host($combine = false): array|string
+function get_tracker_schema_and_host($trackerUrlId, $combine = false): array|string
 {
+    /*
     global $https_announce_urls, $announce_urls;
     $httpsAnnounceUrls = array_filter($https_announce_urls);
     $log = "cookie: " . json_encode($_COOKIE) . ", https_announce_urls: " . json_encode($httpsAnnounceUrls);
@@ -694,6 +725,25 @@ function get_tracker_schema_and_host($combine = false): array|string
     do_log($log);
     if ($combine) {
         return $ssl_torrent . $base_announce_url;
+    }
+    */
+    $log = "tracker_url_id: $trackerUrlId, combine: $combine";
+    $url = \App\Models\TrackerUrl::getById($trackerUrlId);
+    if (empty($url)) {
+        $ssl_torrent = isHttps() ? 'https://' : 'http://';
+        $base_announce_url = sprintf(
+            "%s/%s",
+            trim(\App\Models\Setting::getBaseUrl(), '/'), trim(DEFAULT_TRACKER_URI, '/')
+        );
+        $log .= ", ById no value";
+    } else {
+        $ssl_torrent = parse_url($url, PHP_URL_SCHEME) . "://" ;
+        $base_announce_url = substr($url, strlen($ssl_torrent));
+        $log .= ", ById has value";
+    }
+    do_log("$log, ssl_torrent: $ssl_torrent, base_announce_url: $base_announce_url");
+    if ($combine) {
+        return $ssl_torrent .  $base_announce_url;
     }
     return compact('ssl_torrent', 'base_announce_url');
 }
@@ -737,7 +787,13 @@ function get_user_row($id)
     if (isset($userRows[$id])) return $userRows[$id];
     $cacheKey = 'user_'.$id.'_content';
     $row = \Nexus\Database\NexusDB::remember($cacheKey, 3600, function () use ($id, $neededColumns) {
-        $user = \App\Models\User::query()->with(['wearing_medals'])->find($id, $neededColumns);
+        $user = \App\Models\User::query()->with([
+            'wearing_medals' => function ($query) {
+                $query->orderBy('user_medals.priority', 'desc')
+                    ->orderBy('user_medals.id', 'desc')
+                    ->limit(get_setting('system.maximum_number_of_medals_can_be_worn', 3));
+            }
+        ])->find($id, $neededColumns);
         if (!$user) {
             return null;
         }
@@ -906,8 +962,11 @@ function isIPSeedBoxFromASN($ip, $exceptionWhenYes = false): bool
    return $result;
 }
 
-function isIPSeedBox($ip, $uid, $withoutCache = false, $exceptionWhenYes = false): bool
+function isIPSeedBox($ip, $uid): bool
 {
+    return \App\Repositories\SeedBoxRepository::isSeedBoxFromUserRecords($uid, $ip)['result'];
+
+    /*
     $key = "nexus_is_ip_seed_box:ip:$ip:uid:$uid";
     $cacheData = \Nexus\Database\NexusDB::cache_get($key);
     if (in_array($cacheData, [0, 1, '0', '1'], true) && !$withoutCache) {
@@ -967,6 +1026,7 @@ function isIPSeedBox($ip, $uid, $withoutCache = false, $exceptionWhenYes = false
     \Nexus\Database\NexusDB::cache_put($key, 0, 300);
     do_log("$key, no result, false");
     return false;
+    */
 }
 
 function getDataTraffic(array $torrent, array $queries, array $user, $peer, $snatch, $promotionInfo)
@@ -1089,6 +1149,7 @@ function clear_user_cache($uid, $passkey = '')
     \Nexus\Database\NexusDB::cache_del("direct_permissions:$uid");
     if ($passkey) {
         \Nexus\Database\NexusDB::cache_del('user_passkey_'.$passkey.'_content');//announce.php
+        \Nexus\Database\NexusDB::cache_del('user_passkey_'.$passkey.'_rss');//torrentrss.php
     }
     $userInfo = \App\Models\User::query()->find($uid, \App\Models\User::$commonFields);
     if ($userInfo) {
@@ -1179,6 +1240,17 @@ function clear_agent_allow_deny_cache()
     }
 }
 
+/**
+ * @see announce.php
+ * @param $infoHash
+ * @return void
+ */
+function clear_torrent_cache($infoHash)
+{
+    do_log("clear_torrent_cache");
+    \Nexus\Database\NexusDB::cache_del('torrent_hash_'.$infoHash.'_content');
+    \Nexus\Database\NexusDB::cache_del("torrent_not_exists:$infoHash");
+}
 
 function user_can($permission, $fail = false, $uid = 0): bool
 {
@@ -1225,12 +1297,19 @@ function user_can($permission, $fail = false, $uid = 0): bool
         global $lang_functions;
         $requireClass = get_setting("authority.$permission");
         if (isset(\App\Models\User::$classes[$requireClass])) {
-            stderr($lang_functions['std_sorry'],$lang_functions['std_permission_denied_only'].get_user_class_name($requireClass,false,true,true).$lang_functions['std_or_above_can_view'],false);
+            stderr($lang_functions['std_sorry'],$lang_functions['std_permission_denied_only'].get_user_class_name($requireClass,false,true,true).sprintf($lang_functions['std_or_above_can_view'], \App\Models\Setting::getSiteName()),false);
         } else {
             stderr($lang_functions['std_error'], $lang_functions['std_permission_denied']);
         }
     }
     throw new \App\Exceptions\InsufficientPermissionException();
+}
+
+function assert_has_permission(bool $permissionCheckResult): void
+{
+    if (!$permissionCheckResult) {
+        throw new \App\Exceptions\InsufficientPermissionException();
+    }
 }
 
 
@@ -1300,16 +1379,45 @@ function has_role_work_seeding($uid)
     return $result;
 }
 
-function is_danger_url($url): bool
+function filter_src($src)
 {
-    $dangerScriptsPattern = "/(logout|login|ajax|announce|scrape|adduser|modtask|take.*)\.php/i";
-    $match = preg_match($dangerScriptsPattern, $url);
-    if ($match > 0) {
-        return true;
+    $path = parse_url($src, PHP_URL_PATH);
+    if (empty($path)) {
+        return $src;
     }
-    return false;
+    $host = parse_url($src, PHP_URL_HOST);
+    $currentHost = parse_url(getSchemeAndHttpHost(), PHP_URL_HOST);
+    if (!empty($host) && $host != $currentHost) {
+        return $src;
+    }
+    if (isset($_SERVER['DOCUMENT_ROOT'])) {
+        $guessScriptFilename = sprintf("%s/%s", $_SERVER['DOCUMENT_ROOT'], trim($path, '/'));
+        if (!file_exists($guessScriptFilename)) {
+            return $src;
+        }
+    }
+    //only allow these
+    $imgExtensions = implode("|", \App\Models\Attachment::IMG_EXTENSIONS);
+    $allowSuffixPattern = "/\.($imgExtensions)/i";
+    if (preg_match($allowSuffixPattern, $path)) {
+        return $src;
+    }
+    $allowScriptPattern = "/(forums|details|offers)\.php/i";
+    if (preg_match($allowScriptPattern, $path)) {
+        return $src;
+    }
+    //log danger, deny directly
+    $dangerScriptsPattern = "/(logout|login|ajax|announce|scrape|adduser|modtask|docleanup|freeleech|take.*)\.php/i";
+    if (preg_match($dangerScriptsPattern, $path)) {
+        $msg = sprintf( "[DANGER_URL]: $src [%s]", nexus()->getRequestId());
+        do_log($msg, "alert");
+        write_log($msg, "mod");
+    }
+    do_log("[NOT_ALLOW_SRC]: $src with path: $path");
+    return "";
 }
 
+//here must retrieve the real time info, no cache!!!
 function get_snatch_info($torrentId, $userId)
 {
     return mysql_fetch_assoc(sql_query(sprintf('select * from snatched where torrentid = %s and userid = %s order by id desc limit 1', $torrentId, $userId)));
@@ -1318,27 +1426,51 @@ function get_snatch_info($torrentId, $userId)
 /**
  * 完整的 Laravel 事件, 在 php 端有监听者的需要触发. 同样会执行 publish_model_event()
  */
-function fire_event(string $name, \Illuminate\Database\Eloquent\Model $model, \Illuminate\Database\Eloquent\Model $oldModel = null): void
+function fire_event(string $name, \Illuminate\Database\Eloquent\Model $model, ?\Illuminate\Database\Eloquent\Model $oldModel = null): void
 {
-    $prefix = "fire_event:";
-    $idKey = $prefix . \Illuminate\Support\Str::random();
-    $idKeyOld = "";
-    \Nexus\Database\NexusDB::cache_put($idKey, serialize($model), 3600*24*30);
-    if ($oldModel) {
-        $idKeyOld = $prefix . \Illuminate\Support\Str::random();
-        \Nexus\Database\NexusDB::cache_put($idKeyOld, serialize($oldModel), 3600*24*30);
+    if (!isset(\App\Enums\ModelEventEnum::$eventMaps[$name])) {
+        throw new \InvalidArgumentException("Event $name is not a valid event enumeration");
     }
-    executeCommand("event:fire --name=$name --idKey=$idKey --idKeyOld=$idKeyOld", "string", true, false);
+    if (IN_NEXUS) {
+        $prefix = "fire_event:";
+        $idKey = $prefix . \Illuminate\Support\Str::random();
+        $idKeyOld = "";
+        \Nexus\Database\NexusDB::cache_put($idKey, serialize($model->toArray()), 3600*24*30);
+        if ($oldModel) {
+            $idKeyOld = $prefix . \Illuminate\Support\Str::random();
+            \Nexus\Database\NexusDB::cache_put($idKeyOld, serialize($oldModel->toArray()), 3600*24*30);
+        }
+//        executeCommand("event:fire --name=$name --idKey=$idKey --idKeyOld=$idKeyOld", "string", true, false);
+        \Nexus\Nexus::dispatchQueueJob(new \App\Jobs\FireEvent($name, $idKey, $idKeyOld));
+        do_log("success fire_event in nexus, name: $name, idKey: $idKey, idKeyOld: $idKeyOld");
+    } else {
+        $eventClass = \App\Enums\ModelEventEnum::$eventMaps[$name]['event'];
+        if (str_ends_with($name, '_deleted')) {
+            //if deleted from database, can not pass model instance, use array
+            $params = [$model->toArray()];
+            if ($oldModel) {
+                $params[] = $oldModel->toArray();
+            }
+        } else {
+            $params = [$model];
+            if ($oldModel) {
+                $params[] = $oldModel;
+            }
+        }
+        call_user_func_array([$eventClass, "dispatch"], $params);
+        publish_model_event($name, $model->id, $model->toJson());
+        do_log("success fire_event in laravel, name: $name, id: $model->id, oldId: " . ($oldModel ? $oldModel->id : ""));
+    }
 }
 
 /**
  * 仅仅是往 redis 发布事件, php 端无监听者仅在其他平台有需要的触发这个即可, 较轻量
  */
-function publish_model_event(string $event, int $id): void
+function publish_model_event(string $event, int $id, string $json = ""): void
 {
     $channel = nexus_env("CHANNEL_NAME_MODEL_EVENT");
     if (!empty($channel)) {
-        \Nexus\Database\NexusDB::redis()->publish($channel, json_encode(["event" => $event, "id" => $id]));
+        \Nexus\Database\NexusDB::redis()->publish($channel, json_encode(["event" => $event, "id" => $id, "json" => $json]));
     } else {
         do_log("event: $event, id: $id, channel: $channel, channel is empty!", "error");
     }
@@ -1351,12 +1483,12 @@ function convertNamespaceToSnake(string $str): string
 
 function get_user_locale(int $uid): string
 {
-    $sql = "select language.site_lang_folder from useers inner join language on users.lang = language.id where users.id = $uid limit 1";
+    $sql = "select language.site_lang_folder from users inner join language on users.lang = language.id where users.id = $uid limit 1";
     $result = \Nexus\Database\NexusDB::select($sql);
     if (empty($result) || empty($result[0]['site_lang_folder'])) {
         return "en";
     }
-    return \App\Http\Middleware\Locale::$languageMaps[$result[0]['site_lang_folder']] ?? 'en';
+    return \App\Http\Middleware\Locale::$languageMaps[$result[0]['site_lang_folder']] ?? $result[0]['site_lang_folder'];
 }
 
 function send_admin_success_notification(string $msg = ""): void {
@@ -1367,7 +1499,7 @@ function send_admin_fail_notification(string $msg = ""): void {
     \Filament\Notifications\Notification::make()->danger()->title($msg ?: "Fail!")->send();
 }
 
-function ability(\App\Enums\Permission\PermissionEnum $permission): string {
+function ability(\App\Enums\Permission\RoutePermissionEnum $permission): string {
     return sprintf("ability:%s", $permission->value);
 }
 
@@ -1377,29 +1509,24 @@ function get_challenge_key(string $challenge): string {
 
 function get_user_from_cookie(array $cookie, $isArray = true): array|\App\Models\User|null {
     $log = "cookie: " . json_encode($cookie);
-    if (empty($_COOKIE["c_secure_pass"])) {
-        do_log("$log, param not enough");
+    $result = get_user_id_and_signature_from_cookie($cookie);
+    if (empty($result)) {
         return null;
     }
-    list($tokenJson, $signature) = explode('.', base64_decode($_COOKIE["c_secure_pass"]));
-    if (empty($tokenJson) || empty($signature)) {
-        do_log("$log, no tokenJson or signature");
-        return null;
-    }
-    $tokenData = json_decode($tokenJson, true);
-    if (!isset($tokenData['user_id'])) {
-        do_log("$log, no user_id");
-        return null;
-    }
-    if (!isset($tokenData['expires']) || $tokenData['expires'] < time()) {
-        do_log("$log, signature expired");
-        return null;
-    }
-    $id = $tokenData['user_id'];
+    $id = $result['user_id'];
+    $tokenJson = $result['token_json'];
+    $signature = $result['signature'];
     $log .= ", uid = $id";
-
+    $isAjax = nexus()->isAjax();
+    $selfEnableBonus = \App\Models\Setting::getSelfEnableBonus();
+    //only in nexus web can self-enable, and require bonus > 0
+    $shouldIgnoreEnabled = IN_NEXUS && !$isAjax && $selfEnableBonus > 0;
     if ($isArray) {
-        $res = sql_query("SELECT * FROM users WHERE users.id = ".sqlesc($id)." AND users.enabled='yes' AND users.status = 'confirmed' LIMIT 1");
+        $whereStr = sprintf("id = %d and status = 'confirmed'", $id);
+        if (!$shouldIgnoreEnabled) {
+            $whereStr .= " and enabled = 'yes'";
+        }
+        $res = sql_query("SELECT * FROM users WHERE $whereStr LIMIT 1");
         $row = mysql_fetch_array($res);
         if (!$row) {
             do_log("$log, user not exists");
@@ -1413,12 +1540,11 @@ function get_user_from_cookie(array $cookie, $isArray = true): array|\App\Models
             do_log("$log, user not exists");
             return null;
         }
-        try {
-            $row->checkIsNormal();
-        } catch (\Exception $e) {
-            do_log("$log, " . $e->getMessage());
-            return null;
+        $checkFields = ['status'];
+        if (!$shouldIgnoreEnabled) {
+            $checkFields[] = 'enabled';
         }
+        $row->checkIsNormal($checkFields);
         $authKey = $row->auth_key;
     }
     $expectedSignature = hash_hmac('sha256', $tokenJson, $authKey);
@@ -1427,6 +1553,46 @@ function get_user_from_cookie(array $cookie, $isArray = true): array|\App\Models
         return null;
     }
     return $row;
+}
+
+function get_user_id_and_signature_from_cookie(array $cookie): array|null
+{
+    $log = "cookie: " . json_encode($cookie);
+    if (empty($cookie["c_secure_pass"])) {
+        do_log("$log, param not enough");
+        return null;
+    }
+    $base64Decoded = base64_decode($cookie["c_secure_pass"]);
+    if (empty($base64Decoded)) {
+        do_log("$log, invalid c_secure_pass");
+        return null;
+    }
+    $log .= ", base64 decoded: " . $base64Decoded;
+    $tokenJsonAndSignature = explode(".", $base64Decoded);
+    if (count($tokenJsonAndSignature) != 2) {
+        do_log("$log, invalid c_secure_pass base64_decoded");
+        return null;
+    }
+    $tokenJson = $tokenJsonAndSignature[0];
+    $signature = $tokenJsonAndSignature[1];
+    if (empty($tokenJson) || empty($signature)) {
+        do_log("$log, no tokenJson or signature");
+        return null;
+    }
+    $tokenData = json_decode($tokenJson, true);
+    if (!isset($tokenData['user_id'])) {
+        do_log("$log, no user_id");
+        return null;
+    }
+    if (!isset($tokenData['expires']) || $tokenData['expires'] < time()) {
+        do_log("$log, signature expired");
+        return null;
+    }
+    return [
+        "user_id" => $tokenData['user_id'],
+        'token_json' => $tokenJson,
+        'signature' => $signature,
+    ];
 }
 
 function render_password_hash_js(string $formId, string $passwordOriginalClass, string $passwordHashedName, bool $passwordRequired, string $passwordConfirmClass = "password_confirmation", string $usernameName = "username"): void {
@@ -1465,15 +1631,15 @@ $formVar.on("click", "input[type=button]", function() {
         return
     }
     if (password !== "") {
-        sha256(password).then((passwordHashed) => {
-            $formVar.find("input[name={$passwordHashedName}]").val(passwordHashed)
-            $formVar.submit()
-        })
+        const passwordHashed = sha256(password)
+        $formVar.find("input[name={$passwordHashedName}]").val(passwordHashed)
+        $formVar.submit()
     } else {
         $formVar.submit()
     }
 })
 JS;
+    \Nexus\Nexus::js("js/crypto-js.js", 'footer', true);
     \Nexus\Nexus::js($js, 'footer', false);
 }
 
@@ -1510,11 +1676,11 @@ async function login(username, password, jqForm) {
             return
         }
 
-        const clientHashedPassword = await sha256(password);
+        const clientHashedPassword = sha256(password);
 
-        const serverSideHash = await sha256(challengeData.data.secret + clientHashedPassword);
+        const serverSideHash = sha256(challengeData.data.secret + clientHashedPassword);
 
-        const clientResponse = await hmacSha256(challengeData.data.challenge, serverSideHash);
+        const clientResponse = hmacSha256(challengeData.data.challenge, serverSideHash);
         jqForm.find("input[name=response]").val(clientResponse)
         jqForm.submit()
     } catch (error) {
@@ -1524,5 +1690,19 @@ async function login(username, password, jqForm) {
 }
 JS;
     \Nexus\Nexus::js("vendor/jquery-loading/jquery.loading.min.js", 'footer', true);
+    \Nexus\Nexus::js("js/crypto-js.js", 'footer', true);
     \Nexus\Nexus::js($js, 'footer', false);
+}
+
+function nexus_escape($data): array|string
+{
+    if (is_array($data)) {
+        return array_map('nexus_escape', $data);
+    }
+    return htmlspecialchars($data, ENT_QUOTES, 'UTF-8');
+}
+
+function is_fpm_mode(): bool
+{
+    return php_sapi_name() === 'fpm-fcgi';
 }

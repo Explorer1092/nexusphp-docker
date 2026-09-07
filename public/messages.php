@@ -229,7 +229,6 @@ $reply = " [ <a href=\"sendmessage.php?receiver=" . $message['sender'] . "&reply
 }
 }
 $body = format_comment($message['msg'], true);
-//$body = htmlspecialchars_decode($body);
 $added = $message['added'];
 if ($message['sender'] == $CURUSER['id'])
 {
@@ -246,7 +245,7 @@ $subject = $lang_messages['text_no_subject'];
 }
 
 // Mark message unread
-sql_query("UPDATE messages SET unread='no' WHERE id=" . sqlesc($pm_id) . " AND receiver=" . sqlesc($CURUSER['id']) . " LIMIT 1");
+sql_query("UPDATE messages SET unread='no' WHERE id=" . sqlesc($pm_id) . " AND receiver=" . sqlesc($CURUSER['id']));
 $Cache->delete_value('user_'.$CURUSER['id'].'_unread_message_count');
 // Display message
 stdhead("PM ($subject)"); ?>
@@ -290,8 +289,8 @@ stdfoot();
 }
 if ($action == "moveordel")
 {
-$pm_id = (int) $_POST['id'];
-$pm_box = (int) $_POST['box'];
+$pm_id = intval($_POST['id'] ?? 0);
+$pm_box = intval($_POST['box'] ?? 0);
 $pm_messages = $_POST['messages'];
 if ($_POST['markread'])
 {
